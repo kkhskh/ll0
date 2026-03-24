@@ -1,0 +1,11 @@
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
+*.pth
+*.ipynb_checkpoints/
+.gsutil/
+
+# Datasets and large files
+datasets/
+eo4wildfires.zip

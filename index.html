@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HEPHAELION Global Disaster Management System</title>
+    
+    <!-- HK Grotesk Font -->
+    <link rel="preload" href="https://cdn.jsdelivr.net/npm/@fontsource/hk-grotesk@4.5.0/files/hk-grotesk-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="https://cdn.jsdelivr.net/npm/@fontsource/hk-grotesk@4.5.0/files/hk-grotesk-latin-500-normal.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="https://cdn.jsdelivr.net/npm/@fontsource/hk-grotesk@4.5.0/files/hk-grotesk-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin>
+    
+    <style>
+        @font-face {
+            font-family: 'HK Grotesk';
+            src: url('https://cdn.jsdelivr.net/npm/@fontsource/hk-grotesk@4.5.0/files/hk-grotesk-latin-400-normal.woff2') format('woff2');
+            font-weight: 400;
+            font-style: normal;
+            font-display: swap;
+        }
+        
+        @font-face {
+            font-family: 'HK Grotesk';
+            src: url('https://cdn.jsdelivr.net/npm/@fontsource/hk-grotesk@4.5.0/files/hk-grotesk-latin-500-normal.woff2') format('woff2');
+            font-weight: 500;
+            font-style: normal;
+            font-display: swap;
+        }
+        
+        @font-face {
+            font-family: 'HK Grotesk';
+            src: url('https://cdn.jsdelivr.net/npm/@fontsource/hk-grotesk@4.5.0/files/hk-grotesk-latin-700-normal.woff2') format('woff2');
+            font-weight: 700;
+            font-style: normal;
+            font-display: swap;
+        }
+    </style>
+    
+    <!-- ESRI ArcGIS JavaScript API -->
+    <link rel="stylesheet" href="https://js.arcgis.com/4.27/esri/themes/dark/main.css">
+    <script>
+        var dojoConfig = {
+            async: true,
+            packages: [{
+                name: "hephaelion",
+                location: location.pathname.replace(/\/[^/]+$/, "") + "/scripts"
+            }]
+        };
+    </script>
+    <script src="https://js.arcgis.com/4.27/"></script>
+    
+    <!-- Application styles and scripts -->
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    
+    <style>
+        /* Base styles */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'HK Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen-Sans, Ubuntu, Cantarell, sans-serif;
+        }
+        
+        body {
+            background-color: #121212;
+            color: #e0e0e0;
+            overflow-x: hidden;
+            font-weight: 400;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* Typography enhancements */
+        h1, h2, h3, .logo-text, .menu-title {
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        .card-title, .status-label, .profile-name {
+            font-weight: 500;
+            letter-spacing: -0.01em;
+        }
+
+        /* Add ESRI map specific styles */
+        #globalMap {
+            width: 100%;
+            height: 100%;
+            background-color: #1e1e1e;
+        }
+        
+        .esri-view {
+            background-color: transparent;
+        }
+        
+        .esri-ui {
+            filter: invert(0.8);
+        }
+        
+        /* Make sure the map container has a defined height */
+        .world-map-card .card-content {
+            height: 500px;
+            position: relative;
+        }
+
+        /* Enhanced text styles */
+        .data-table th {
+            font-weight: 500;
+            letter-spacing: 0.02em;
+        }
+
+        .alert-title, .response-name {
+            font-weight: 700;
+            letter-spacing: -0.01em;
+        }
+
+        .status-value, .satellite-name {
+            font-weight: 500;
+        }
+
+        .footer-info {
+            font-weight: 400;
+            letter-spacing: 0.01em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <div class="logo-icon"><i class="fas fa-satellite"></i></div>
+                <div class="logo-text">HEPHAELION</div>
+                <div class="status-indicator"></div>
+            </div>
+            <div class="header-controls">
+                <div class="global-status">
+                    <span class="status-label">GLOBAL STATUS:</span>
+                    <span class="status-value">OPERATIONAL</span>
+                </div>
+                <div class="satellite-status">
+                    <span class="status-label">SATELLITES ONLINE:</span>
+                    <span class="status-value">24/25</span>
+                </div>
+                <div class="auth-status">
+                    <span class="user-avatar"><i class="fas fa-user-shield"></i></span>
+                    <span>ADMIN ACCESS | SECURITY LEVEL: ALPHA</span>
+                </div>
+            </div>
+        </header>
+        
+        <div class="sidebar">
+            <div class="user-profile">
+                <div class="profile-image">
+                    <i class="fas fa-user-circle"></i>
+                </div>
+                <div class="profile-info">
+                    <div class="profile-name">System Administrator</div>
+                    <div class="profile-role">Global Access</div>
+                </div>
+            </div>
+
+            <div class="menu-title">System Controls</div>
+            <ul class="menu-list">
+                <li class="menu-item active"><i class="fas fa-globe-americas"></i>Disaster Monitoring</li>
+                <li class="menu-item"><i class="fas fa-temperature-low"></i>Climate Stabilizers</li>
+                <li class="menu-item"><i class="fas fa-satellite"></i>Satellite Network</li>
+                <li class="menu-item"><i class="fas fa-broadcast-tower"></i>Global Sensors</li>
+                <li class="menu-item"><i class="fas fa-shield-alt"></i>Emergency Protocols</li>
+                <li class="menu-item"><i class="fas fa-cogs"></i>System Configuration</li>
+            </ul>
+            
+            <div class="menu-title">Disaster Management</div>
+            <ul class="menu-list">
+                <li class="menu-item"><i class="fas fa-wind"></i>Hurricane Control</li>
+                <li class="menu-item"><i class="fas fa-water"></i>Tsunami Mitigation</li>
+                <li class="menu-item"><i class="fas fa-mountain"></i>Earthquake Response</li>
+                <li class="menu-item"><i class="fas fa-fire"></i>Wildfire Suppression</li>
+                <li class="menu-item"><i class="fas fa-cloud-showers-heavy"></i>Flood Prevention</li>
+                <li class="menu-item"><i class="fas fa-bolt"></i>Storm Management</li>
+            </ul>
+
+            <div class="menu-title">Analytics & Reporting</div>
+            <ul class="menu-list">
+                <li class="menu-item"><i class="fas fa-chart-line"></i>Predictive Analytics</li>
+                <li class="menu-item"><i class="fas fa-history"></i>Historical Data</li>
+                <li class="menu-item"><i class="fas fa-file-alt"></i>Reports</li>
+            </ul>
+        </div>
+        
+        <div class="main-content">
+            <div class="content-header">
+                <h1>Global Disaster Monitoring & Control</h1>
+                <div class="header-actions">
+                    <button class="action-btn"><i class="fas fa-sync"></i> Refresh Data</button>
+                    <button class="action-btn"><i class="fas fa-satellite-dish"></i> Satellite Status</button>
+                    <button class="action-btn danger"><i class="fas fa-exclamation-triangle"></i> Emergency Override</button>
+                </div>
+            </div>
+
+            <div class="dashboard-grid">
+                <div class="card world-map-card">
+                    <div class="card-title">
+                        Global Monitoring System
+                        <div class="card-controls">
+                            <span class="anomaly-level">Level 3 Anomaly</span>
+                            <button class="card-control-btn"><i class="fas fa-expand"></i></button>
+                        </div>
+                    </div>
+                    <div class="card-content">
+                        <div id="globalMap"></div>
+                        <div class="map-overlay">
+                            <div class="satellite-indicator" style="left: 30%; top: 20%;" title="Satellite #1 - North America">
+                                <i class="fas fa-satellite"></i>
+                            </div>
+                            <div class="satellite-indicator" style="left: 45%; top: 15%;" title="Satellite #2 - North Atlantic">
+                                <i class="fas fa-satellite"></i>
+                            </div>
+                            <div class="satellite-indicator" style="left: 60%; top: 25%;" title="Satellite #3 - Europe">
+                                <i class="fas fa-satellite"></i>
+                            </div>
+                            <div class="satellite-indicator" style="left: 75%; top: 30%;" title="Satellite #4 - Asia">
+                                <i class="fas fa-satellite"></i>
+                            </div>
+                            <div class="satellite-indicator offline" style="left: 65%; top: 60%;" title="Satellite #5 - Australia (Offline)">
+                                <i class="fas fa-satellite"></i>
+                            </div>
+                            <div class="disaster-indicator active" style="left: 20%; top: 40%;" title="Hurricane Formation - Atlantic Basin">
+                                <i class="fas fa-wind"></i>
+                            </div>
+                            <div class="disaster-indicator critical" style="left: 70%; top: 55%;" title="Tsunami Warning - Pacific Ocean">
+                                <i class="fas fa-water"></i>
+                            </div>
+                        </div>
+                        <div class="simulation-controls">
+                            <button class="sim-btn active" id="currentState"><i class="fas fa-globe"></i> Current State</button>
+                            <button class="sim-btn" id="hurricaneBtn"><i class="fas fa-wind"></i> Hurricane</button>
+                            <button class="sim-btn" id="tsunamiBtn"><i class="fas fa-water"></i> Tsunami</button>
+                            <button class="sim-btn" id="wildfireBtn"><i class="fas fa-fire"></i> Wildfire</button>
+                            <button class="sim-btn" id="stormBtn"><i class="fas fa-bolt"></i> Storms</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-title">
+                        Atmospheric Pressure
+                        <div class="card-controls">
+                            <button class="card-control-btn"><i class="fas fa-expand"></i></button>
+                        </div>
+                    </div>
+                    <div class="card-content">
+                        <canvas id="pressureChart"></canvas>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-title">
+                        Temperature Deviation
+                        <div class="card-controls">
+                            <button class="card-control-btn"><i class="fas fa-expand"></i></button>
+                        </div>
+                    </div>
+                    <div class="card-content">
+                        <canvas id="tempChart"></canvas>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-title">
+                        Satellite Network Status
+                        <div class="card-controls">
+                            <button class="card-control-btn"><i class="fas fa-cog"></i></button>
+                        </div>
+                    </div>
+                    <div class="card-content">
+                        <div class="satellite-grid">
+                            <div class="satellite-item online">
+                                <div class="satellite-icon"><i class="fas fa-satellite"></i></div>
+                                <div class="satellite-info">
+                                    <div class="satellite-name">SAT-01</div>
+                                    <div class="satellite-status">Online</div>
+                                </div>
+                                <div class="satellite-health">
+                                    <div class="health-bar">
+                                        <div class="health-level" style="width: 95%;"></div>
+                                    </div>
+                                    <div class="health-text">95%</div>
+                                </div>
+                            </div>
+                            <div class="satellite-item online">
+                                <div class="satellite-icon"><i class="fas fa-satellite"></i></div>
+                                <div class="satellite-info">
+                                    <div class="satellite-name">SAT-02</div>
+                                    <div class="satellite-status">Online</div>
+                                </div>
+                                <div class="satellite-health">
+                                    <div class="health-bar">
+                                        <div class="health-level" style="width: 87%;"></div>
+                                    </div>
+                                    <div class="health-text">87%</div>
+                                </div>
+                            </div>
+                            <div class="satellite-item warning">
+                                <div class="satellite-icon"><i class="fas fa-satellite"></i></div>
+                                <div class="satellite-info">
+                                    <div class="satellite-name">SAT-03</div>
+                                    <div class="satellite-status">Warning</div>
+                                </div>
+                                <div class="satellite-health">
+                                    <div class="health-bar">
+                                        <div class="health-level warning" style="width: 62%;"></div>
+                                    </div>
+                                    <div class="health-text">62%</div>
+                                </div>
+                            </div>
+                            <div class="satellite-item offline">
+                                <div class="satellite-icon"><i class="fas fa-satellite"></i></div>
+                                <div class="satellite-info">
+                                    <div class="satellite-name">SAT-04</div>
+                                    <div class="satellite-status">Offline</div>
+                                </div>
+                                <div class="satellite-health">
+                                    <div class="health-bar">
+                                        <div class="health-level critical" style="width: 12%;"></div>
+                                    </div>
+                                    <div class="health-text">12%</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card alerts-card">
+                    <div class="card-title">
+                        System Alerts
+                        <div class="card-controls">
+                            <button class="card-control-btn"><i class="fas fa-bell"></i></button>
+                        </div>
+                    </div>
+                    <div class="card-content">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Location</th>
+                                    <th>Event</th>
+                                    <th>Severity</th>
+                                    <th>Status</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr class="alert-row critical">
+                                    <td>08:42:15</td>
+                                    <td>Pacific Ocean</td>
+                                    <td>Tsunami Warning</td>
+                                    <td><span class="severity critical">Critical</span></td>
+                                    <td>Active</td>
+                                    <td>
+                                        <button class="table-btn"><i class="fas fa-eye"></i></button>
+                                        <button class="table-btn"><i class="fas fa-shield-alt"></i></button>
+                                    </td>
+                                </tr>
+                                <tr class="alert-row high">
+                                    <td>07:38:21</td>
+                                    <td>Atlantic Basin</td>
+                                    <td>Hurricane Formation</td>
+                                    <td><span class="severity high">High</span></td>
+                                    <td>Monitoring</td>
+                                    <td>
+                                        <button class="table-btn"><i class="fas fa-eye"></i></button>
+                                        <button class="table-btn"><i class="fas fa-shield-alt"></i></button>
+                                    </td>
+                                </tr>
+                                <tr class="alert-row medium">
+                                    <td>06:15:49</td>
+                                    <td>California</td>
+                                    <td>Wildfire Detection</td>
+                                    <td><span class="severity medium">Medium</span></td>
+                                    <td>Intervention</td>
+                                    <td>
+                                        <button class="table-btn"><i class="fas fa-eye"></i></button>
+                                        <button class="table-btn"><i class="fas fa-shield-alt"></i></button>
+                                    </td>
+                                </tr>
+                                <tr class="alert-row medium">
+                                    <td>06:15:49</td>
+                                    <td>Mexico</td>
+                                    <td>Earthquake</td>
+                                    <td><span class="severity medium">Medium</span></td>
+                                    <td>Resolved</td>
+                                    <td>
+                                        <button class="table-btn"><i class="fas fa-eye"></i></button>
+                                        <button class="table-btn"><i class="fas fa-shield-alt"></i></button>
+                                    </td>
+                                </tr>
+                                <tr class="alert-row low">
+                                    <td>05:22:07</td>
+                                    <td>Siberia</td>
+                                    <td>Temperature Anomaly</td>
+                                    <td><span class="severity low">Low</span></td>
+                                    <td>Resolved</td>
+                                    <td>
+                                        <button class="table-btn"><i class="fas fa-eye"></i></button>
+                                        <button class="table-btn"><i class="fas fa-shield-alt"></i></button>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                
+                <div class="card system-status-card">
+                    <div class="card-title">
+                        System Status & Resilience
+                        <div class="card-controls">
+                            <button class="card-control-btn"><i class="fas fa-cog"></i></button>
+                        </div>
+                    </div>
+                    <div class="card-content">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>System</th>
+                                    <th>Status</th>
+                                    <th>Redundancy</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>Satellite Network</td>
+                                    <td><span class="status-badge online">Online</span></td>
+                                    <td>
+                                        <div class="redundancy-bar">
+                                            <div class="redundancy-level" style="width: 80%;"></div>
+                                        </div>
+                                        <span class="redundancy-text">24/25 Operational</span>
+                                    </td>
+                                    <td>
+                                        <button class="table-btn"><i class="fas fa-sync"></i></button>
+                                        <button class="table-btn"><i class="fas fa-cog"></i></button>
+                                    </td>
+                                </tr>
+                                <tr class="warning-row">
+                                    <td>Climate Stabilizers</td>
+                                    <td><span class="status-badge warning">Degraded</span></td>
+                                    <td>
+                                        <div class="redundancy-bar">
+                                            <div class="redundancy-level warning" style="width: 40%;"></div>
+                                        </div>
+                                        <span class="redundancy-text">2/5 Backups</span>
+                                    </td>
+                                    <td>
+                                        <button class="table-btn"><i class="fas fa-sync"></i></button>
+                                        <button class="table-btn"><i class="fas fa-cog"></i></button>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td>Neural Network</td>
+                                    <td><span class="status-badge online">Online</span></td>
+                                    <td>
+                                        <div class="redundancy-bar">
+                                            <div class="redundancy-level" style="width: 100%;"></div>
+                                        </div>
+                                        <span class="redundancy-text">3/3 Backups</span>
+                                    </td>
+                                    <td>
+                                        <button class="table-btn"><i class="fas fa-sync"></i></button>
+                                        <button class="table-btn"><i class="fas fa-cog"></i></button>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td>Power Grid</td>
+                                    <td><span class="status-badge online">Online</span></td>
+                                    <td>
+                                        <div class="redundancy-bar">
+                                            <div class="redundancy-level" style="width: 67%;"></div>
+                                        </div>
+                                        <span class="redundancy-text">2/3 Backups</span>
+                                    </td>
+                                    <td>
+                                        <button class="table-btn"><i class="fas fa-sync"></i></button>
+                                        <button class="table-btn"><i class="fas fa-cog"></i></button>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td>Emergency Systems</td>
+                                    <td><span class="status-badge online">Online</span></td>
+                                    <td>
+                                        <div class="redundancy-bar">
+                                            <div class="redundancy-level" style="width: 100%;"></div>
+                                        </div>
+                                        <span class="redundancy-text">Isolated</span>
+                                    </td>
+                                    <td>
+                                        <button class="table-btn"><i class="fas fa-sync"></i></button>
+                                        <button class="table-btn"><i class="fas fa-cog"></i></button>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="alert-popup" id="tsunamiAlert">
+                <div class="alert-header">
+                    <div class="alert-title">
+                        <div class="alert-icon"><i class="fas fa-water"></i></div>
+                        CRITICAL ALERT: TSUNAMI WARNING
+                    </div>
+                    <div class="alert-close" id="closeAlert"><i class="fas fa-times"></i></div>
+                </div>
+                <div class="alert-body">
+                    <div class="alert-message">
+                        <p>Tsunami warning detected in Pacific Ocean region. Wave height estimated at 15.2 meters.</p>
+                        <p>Estimated impact: <strong>45 minutes</strong> to Hawaiian Islands, <strong>3.5 hours</strong> to West Coast.</p>
+                        <p>Affected population: <strong>Est. 2.3M people</strong></p>
+                    </div>
+                    <div class="alert-details">
+                        <div class="detail-item">
+                            <div class="detail-label">Detection Confidence:</div>
+                            <div class="detail-value">98.7%</div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="detail-label">ML Model:</div>
+                            <div class="detail-value">Tsunami-Detection-v4.2</div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="detail-label">Satellite Source:</div>
+                            <div class="detail-value">SAT-07, SAT-12, SAT-15</div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="detail-label">Verification Status:</div>
+                            <div class="detail-value">Confirmed by NOAA</div>
+                        </div>
+                    </div>
+                    <div class="response-options">
+                        <div class="response-title">Response Options:</div>
+                        <div class="response-grid">
+                            <button class="response-btn level-1">
+                                <div class="response-icon"><i class="fas fa-eye"></i></div>
+                                <div class="response-info">
+                                    <div class="response-name">LEVEL 1: MONITOR</div>
+                                    <div class="response-desc">Continue tracking, no active intervention</div>
+                                </div>
+                            </button>
+                            <button class="response-btn level-2">
+                                <div class="response-icon"><i class="fas fa-bell"></i></div>
+                                <div class="response-info">
+                                    <div class="response-name">LEVEL 2: LOCAL ALERT</div>
+                                    <div class="response-desc">Notify regional authorities only</div>
+                                </div>
+                            </button>
+                            <button class="response-btn level-3">
+                                <div class="response-icon"><i class="fas fa-users"></i></div>
+                                <div class="response-info">
+                                    <div class="response-name">LEVEL 3: EVACUATION</div>
+                                    <div class="response-desc">Trigger coastal evacuation protocols</div>
+                                </div>
+                            </button>
+                            <button class="response-btn level-4">
+                                <div class="response-icon"><i class="fas fa-shield-alt"></i></div>
+                                <div class="response-info">
+                                    <div class="response-name">LEVEL 4: INTERVENTION</div>
+                                    <div class="response-desc">Activate wave dampening systems</div>
+                                </div>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="alert-footer">
+                    <button class="alert-btn"><i class="fas fa-file-alt"></i> System Log</button>
+                    <div>
+                        <button class="alert-btn"><i class="fas fa-users"></i> Transfer to Team</button>
+                        <button class="alert-btn primary" id="dismissAlert"><i class="fas fa-check"></i> Acknowledge</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <footer>
+            <div class="footer-info">HEPHAELION System v4.2.1 | Authorized Access Only | Last Updated: 03/01/2025 09:15:22 UTC</div>
+            <div class="footer-status">
+                <div class="status-item">
+                    <i class="fas fa-satellite"></i> Satellites: 24/25
+                </div>
+                <div class="status-item">
+                    <i class="fas fa-server"></i> Servers: 100%
+                </div>
+                <div class="status-item">
+                    <i class="fas fa-tachometer-alt"></i> System Load: 42%
+                </div>
+                <div class="status-item">
+                    <i class="fas fa-shield-alt"></i> Security: Active
+                </div>
+            </div>
+        </footer>
+    </div>
+    
+    <script src="scripts.js"></script>
+</body>
+</html>

@@ -1,0 +1,260 @@
+sed on my analysis of this research paper on machine learning for volcanic deformation detection, here are the key datasets and their sources:
+Primary Datasets Used
+1. Sentinel-1 SAR Data
+
+Source: European Sentinel-1 constellation offers global coverage of radar images with a repeat cycle of 6 days at best, amounting to >13 TB per day
+Access Point: Sentinel-1 data is taken directly from the Centre for Environmental Data Analysis (CEDA) Sentinel Mirror Archive (SMA)
+Coverage: 592,224 wrapped interferograms of 1084 volcanoes from November 2015 to November 2020
+
+2. COMET-LiCSAR Processed Data
+
+Primary Portal: COMET-LICSAR archive of processed Sentinel-1 radar images (http://comet.nerc.ac.uk/COMET-LiCS-portal/)
+Processing System: COMET-LICSAR automated processing system which is based on the GAMMA SAR processing software package and runs on the UK Centre for Environmental Data Analysis infrastructure JASMIN
+
+3. Volcano Location Data
+
+Source: Global Volcanism Programme (Global Volcanism Program 2013) generating 592,224 wrapped interferograms of 1084 volcanoes
+
+4. Topographic Data
+
+Source: elevation data primarily from the Shuttle Radar Topography Mission (SRTM)
+
+5. Atmospheric Correction Data
+
+Source: COMET-GACOS system (Yu et al. 2018) which is based on the operational HRES weather model produced by the European Centre for Medium-Range Weather Forecasts (ECMWF) data
+
+Data Access Information
+Open Access Availability
+The paper mentions several open access resources:
+
+The InSAR data are available at http://comet.nerc.ac.uk/COMET-LiCS-portal/
+Machine Learning Codes are available at: https://doi.org/10.5281/zenodo.5550815
+The machine learning outputs (filenames and probabilities) are included as a supplementary datafile and is also available at https://doi.org/10.5281/zenodo.7199356
+
+Real-time Monitoring Portal
+The machine learning algorithms described here have been adapted to run on the open-access, web-based COMET Volcano Portal (https://comet.nerc.ac.uk/comet-volcano-portal/)
+Key Dataset Characteristics
+
+Scale: ~600,000 images covering >1000 volcanoes over 5 years
+Global Coverage: ~ 10% of the interferograms are located over European volcanoes (compared to 43% in Anantrasirichai et al. (2018)) and there is good coverage of Latin American (28%) and Asian (22%) volcanoes
+Detection Threshold: The detection threshold for the whole dataset is 5.9 cm, equivalent to a rate of 1.2 cm/year over the 5-year study period
+
+This represents one of the largest systematically processed volcano monitoring datasets available for machine learning research, with both the raw interferometric data and processed results being made openly available through UK research infrastructure.okay lets understand how to replicate the results and to have such modelsJul 19, 2025Based on the paper, here's a comprehensive guide to replicate their machine learning approach for volcanic deformation detection:
+1. Data Acquisition & Processing Pipeline
+Step 1: Get Sentinel-1 SAR Data
+python# Key data sources
+sentinel1_source = "CEDA Sentinel Mirror Archive (SMA)"
+processing_system = "COMET-LICSAR"
+data_portal = "http://comet.nerc.ac.uk/COMET-LiCS-portal/"
+What you need:
+
+Access to Sentinel-1 data (free but requires registration)
+GAMMA SAR processing software package
+Infrastructure like JASMIN for processing
+
+Step 2: Generate Interferograms
+python# Processing specifications from paper
+frame_size = "250km x 250km"  # LiCSAR standard frames
+grid_resolution = "0.001° × 0.001°"  # geocoded grid
+interferogram_connections = "each acquisition to at least 3 successive acquisitions"
+temporal_baselines = [6, 12, 18, 24, 36] # days (when both satellites operational)
+Key processing steps:
+
+Generate differential interferograms
+Crop 0.5° × 0.5° box around each volcano
+Use SRTM elevation data for geocoding
+Apply atmospheric corrections using ECMWF data
+
+2. Machine Learning Architecture
+Base Model: Modified AlexNet CNN
+pythonimport torch
+import torch.nn as nn
+
+class VolcanoDeformationCNN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # Fine-tuned AlexNet architecture
+        # Input: 224x224 grayscale patches
+        # Output: probability of deformation
+        
+    def forward(self, x):
+        # Convert wrapped interferogram to 8-bit grayscale
+        # Divide into overlapping 224x224 patches
+        # Shift by 28 pixels to cover image
+        pass
+Training Data Requirements
+pythontraining_data = {
+    "real_examples": "Anantrasirichai et al. (2018)",
+    "synthetic_examples": "Anantrasirichai et al. (2019b)", 
+    "classes": 2,  # "D+S+T vs S+T"
+    "patch_size": (224, 224),
+    "shift_size": 28
+}
+
+# D = deformation signal
+# S = stratified atmospheric signal  
+# T = turbulent atmospheric signal
+3. Implementation Steps
+Step 1: Set Up Processing Environment
+bash# Install required software
+pip install numpy scipy matplotlib
+pip install torch torchvision
+pip install rasterio gdal
+# GAMMA SAR (commercial license required)
+Step 2: Data Preprocessing
+pythondef preprocess_interferogram(ifg_path):
+    """
+    Convert wrapped interferogram to CNN input format
+    """
+    # Load interferogram
+    ifg = load_interferogram(ifg_path)
+    
+    # Convert to 8-bit grayscale
+    ifg_8bit = convert_to_8bit(ifg)
+    
+    # Create overlapping patches
+    patches = create_patches(ifg_8bit, 
+                           patch_size=224, 
+                           shift=28)
+    return patches
+
+def create_training_dataset():
+    """
+    Combine real and synthetic training data
+    """
+    real_data = load_real_examples()
+    synthetic_data = generate_synthetic_examples()
+    
+    # Balance classes
+    balanced_dataset = balance_classes(real_data, synthetic_data)
+    return balanced_dataset
+Step 3: Model Training
+pythondef train_volcano_cnn():
+    # Load pre-trained AlexNet
+    model = torchvision.models.alexnet(pretrained=True)
+    
+    # Modify for binary classification
+    model.classifier[-1] = nn.Linear(4096, 2)
+    
+    # Fine-tune on volcano data
+    optimizer = torch.optim.Adam(model.parameters())
+    criterion = nn.CrossEntropyLoss()
+    
+    for epoch in range(num_epochs):
+        for batch in dataloader:
+            # Training loop
+            pass
+            
+    return model
+Step 4: Detection Pipeline
+pythondef detect_deformation(interferogram_path, model):
+    """
+    Apply trained CNN to detect deformation
+    """
+    # Preprocess interferogram
+    patches = preprocess_interferogram(interferogram_path)
+    
+    # Get predictions for each patch
+    probabilities = []
+    for patch in patches:
+        prob = model(patch)
+        probabilities.append(prob)
+    
+    # Merge probabilities with Gaussian weights
+    merged_prob = merge_probabilities(probabilities)
+    
+    # Apply threshold (P > 0.5)
+    detection_flag = merged_prob > 0.5
+    
+    return merged_prob, detection_flag
+4. Key Implementation Details
+Detection Thresholds by Region
+pythondetection_thresholds = {
+    "global_average": 5.9,  # cm
+    "low_relief": "<5.0",   # cm (e.g., Reykjanes, Tambora)
+    "high_relief": ">5.0",  # cm (e.g., Laguna del Maule, Etna)
+    "vegetated": ">7.5",    # cm (e.g., Corbetti)
+    "water_cover": ">7.5"   # cm (e.g., Campi Flegrei)
+}
+Time Series Analysis
+pythondef time_series_analysis(volcano_interferograms):
+    """
+    Apply CNN to cumulative time series
+    """
+    # Unwrap interferograms
+    unwrapped = unwrap_interferograms(volcano_interferograms)
+    
+    # Create cumulative displacement maps
+    cumulative_maps = create_time_series(unwrapped)
+    
+    # Re-wrap at different intervals
+    wrap_intervals = [2.8, 1.4, 0.7, 0.35]  # cm
+    
+    probabilities = []
+    for interval in wrap_intervals:
+        wrapped = rewrap_at_interval(cumulative_maps, interval)
+        prob = apply_cnn(wrapped)
+        probabilities.append(prob)
+    
+    # Average probabilities
+    final_prob = np.mean(probabilities, axis=0)
+    
+    return final_prob
+5. Validation & Performance Metrics
+Expert Review Categories
+pythonclassification_categories = {
+    "persistent_detections": ">25 detections OR >10% of total interferograms",
+    "occasional_detections": "2-25 detections",
+    "true_positives": ["eruptions", "intrusions", "unrest"],
+    "false_positives": ["atmospheric", "non_volcanic", "processing_errors"]
+}
+Performance Analysis
+pythondef evaluate_model_performance():
+    """
+    Analyze detection performance across different conditions
+    """
+    performance_factors = {
+        "coherence": "higher coherence = better detection",
+        "deformation_rate": "faster rates easier to detect", 
+        "atmospheric_conditions": "clear conditions preferred",
+        "topography": "low relief better than high relief",
+        "land_cover": "bare ground better than vegetation"
+    }
+    
+    return performance_factors
+6. Practical Deployment
+Real-time Monitoring System
+pythondef deploy_monitoring_system():
+    """
+    Set up automated monitoring pipeline
+    """
+    # Connect to Sentinel-1 data stream
+    # Process new acquisitions automatically
+    # Run CNN detection
+    # Flag significant detections
+    # Alert volcano observatories
+    
+    monitoring_portal = "https://comet.nerc.ac.uk/comet-volcano-portal/"
+    return monitoring_portal
+7. Required Resources
+Computational Requirements
+
+High-performance computing cluster (like JASMIN)
+GPU acceleration for CNN training/inference
+Large storage for interferogram archive (~13 TB/day from Sentinel-1)
+
+Software Dependencies
+
+GAMMA SAR processing software
+Python ML stack (PyTorch/TensorFlow)
+GDAL/PROJ for geospatial processing
+Atmospheric correction models (GACOS)
+
+Data Access
+
+Sentinel-1 data access (free registration required)
+Volcano location database (Global Volcanism Programme)
+Digital elevation models (SRTM)
+Weather model data (ECMWF)
+
+This framework provides the foundation for replicating their approach, though implementing the full system requires significant computational resources and expertise in both SAR processing and machine learning.

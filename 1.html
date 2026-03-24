@@ -1,0 +1,822 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HEPHAELION System</title>
+    
+    <!-- ESRI ArcGIS JavaScript API -->
+    <link rel="stylesheet" href="https://js.arcgis.com/4.27/esri/themes/dark/main.css">
+    <script>
+        var dojoConfig = {
+            async: true,
+            packages: [{
+                name: "hephaelion",
+                location: location.pathname.replace(/\/[^/]+$/, "") + "/scripts"
+            }]
+        };
+    </script>
+    <script src="https://js.arcgis.com/4.27/"></script>
+    <script src="scripts.js"></script>
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Courier New', monospace;
+        }
+        
+        body {
+            background-color: #121212;
+            color: #e0e0e0;
+            overflow-x: hidden;
+        }
+        
+        .container {
+            display: grid;
+            grid-template-columns: 250px 1fr;
+            grid-template-rows: 60px 1fr 40px;
+            height: 100vh;
+        }
+        
+        header {
+            grid-column: 1 / -1;
+            background-color: #0a0a0a;
+            border-bottom: 1px solid #333;
+            display: flex;
+            align-items: center;
+            padding: 0 20px;
+        }
+        
+        .logo {
+            display: flex;
+            align-items: center;
+        }
+        
+        .logo-text {
+            font-size: 24px;
+            font-weight: bold;
+            margin-left: 10px;
+            color: #fff;
+        }
+        
+        .status-indicator {
+            width: 10px;
+            height: 10px;
+            background-color: #ff3333;
+            border-radius: 50%;
+            margin-left: 10px;
+            animation: blink 2s infinite;
+        }
+        
+        @keyframes blink {
+            0% { opacity: 0.2; }
+            50% { opacity: 1; }
+            100% { opacity: 0.2; }
+        }
+        
+        .auth-status {
+            margin-left: auto;
+            font-size: 12px;
+            color: #888;
+        }
+        
+        .sidebar {
+            background-color: #1a1a1a;
+            border-right: 1px solid #333;
+            padding: 20px;
+            overflow-y: auto;
+        }
+        
+        .menu-title {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+        }
+        
+        .menu-list {
+            list-style: none;
+        }
+        
+        .menu-item {
+            padding: 8px 10px;
+            margin-bottom: 5px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        
+        .menu-item:hover {
+            background-color: #252525;
+        }
+        
+        .menu-item.active {
+            background-color: #333;
+            color: #fff;
+        }
+        
+        .main-content {
+            padding: 20px;
+            overflow-y: auto;
+            position: relative;
+        }
+        
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            grid-template-rows: repeat(2, 250px);
+            gap: 20px;
+        }
+        
+        .card {
+            background-color: #1e1e1e;
+            border: 1px solid #333;
+            border-radius: 4px;
+            padding: 15px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .card-title {
+            font-size: 14px;
+            color: #aaa;
+            margin-bottom: 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .anomaly-level {
+            font-size: 12px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            background-color: #c33;
+            color: white;
+        }
+        
+        .card-content {
+            height: calc(100% - 30px);
+            display: flex;
+            flex-direction: column;
+        }
+        
+        canvas {
+            width: 100%;
+            height: 100%;
+            background-color: rgba(255, 255, 255, 0.02);
+        }
+        
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        
+        .data-table th, .data-table td {
+            padding: 6px 10px;
+            text-align: left;
+            border-bottom: 1px solid #333;
+        }
+        
+        .data-table th {
+            color: #888;
+            font-weight: normal;
+        }
+        
+        .data-table td {
+            color: #ccc;
+        }
+        
+        .alert-row {
+            background-color: rgba(255, 40, 40, 0.1);
+        }
+        
+        footer {
+            grid-column: 1 / -1;
+            background-color: #0a0a0a;
+            border-top: 1px solid #333;
+            display: flex;
+            align-items: center;
+            padding: 0 20px;
+            font-size: 12px;
+            color: #666;
+        }
+        
+        .alert-popup {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background-color: rgba(0, 0, 0, 0.8);
+            border: 1px solid #ff3333;
+            border-radius: 4px;
+            padding: 15px;
+            width: 300px;
+            color: #fff;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5);
+            animation: slideIn 0.3s ease-out;
+            z-index: 100;
+        }
+        
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        
+        .alert-title {
+            font-size: 16px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+        }
+        
+        .alert-icon {
+            width: 16px;
+            height: 16px;
+            background-color: #ff3333;
+            border-radius: 50%;
+            margin-right: 10px;
+            animation: blink 1s infinite;
+        }
+        
+        .alert-message {
+            font-size: 14px;
+            margin-bottom: 15px;
+        }
+        
+        .btn-group {
+            display: flex;
+            justify-content: flex-end;
+        }
+        
+        .btn {
+            padding: 5px 10px;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: background-color 0.2s;
+        }
+        
+        .btn-primary {
+            background-color: #444;
+            color: white;
+            margin-left: 10px;
+        }
+        
+        .btn-primary:hover {
+            background-color: #555;
+        }
+        
+        .btn-danger {
+            background-color: #a22;
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background-color: #c33;
+        }
+        
+        .simulation-controls {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+        }
+        
+        .sim-btn {
+            padding: 8px 12px;
+            background-color: #333;
+            border: 1px solid #444;
+            color: #ddd;
+            border-radius: 3px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .sim-btn:hover {
+            background-color: #444;
+        }
+        
+        .sim-btn.active {
+            background-color: #555;
+            border-color: #666;
+        }
+        
+        #globalMap {
+            width: 100%;
+            height: 100%;
+            background-color: #1e1e1e;
+        }
+        
+        .esri-view {
+            background-color: transparent;
+        }
+        
+        .esri-ui {
+            filter: invert(0.8);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <div class="logo-text">HEPHAELION</div>
+                <div class="status-indicator"></div>
+            </div>
+            <div class="auth-status">ADMIN ACCESS | SECURITY LEVEL: ALPHA</div>
+        </header>
+        
+        <div class="sidebar">
+            <div class="menu-title">System Controls</div>
+            <ul class="menu-list">
+                <li class="menu-item active">Disaster Monitoring</li>
+                <li class="menu-item">Climate Stabilizers</li>
+                <li class="menu-item">Satellite Network</li>
+                <li class="menu-item">Global Sensors</li>
+                <li class="menu-item">Emergency Protocols</li>
+            </ul>
+            
+            <div class="menu-title" style="margin-top:30px;">Disaster Simulations</div>
+            <ul class="menu-list">
+                <li class="menu-item">Hurricane Generator</li>
+                <li class="menu-item">Tsunami Simulator</li>
+                <li class="menu-item">Earthquake Patterns</li>
+                <li class="menu-item">Extreme Temperature</li>
+                <li class="menu-item">Lightning Storms</li>
+            </ul>
+        </div>
+        
+        <div class="main-content">
+            <div class="dashboard-grid">
+                <div class="card" style="grid-column: 1 / 3; grid-row: 1 / 3;">
+                    <div class="card-title">
+                        Global Weather Pattern Analysis
+                        <span class="anomaly-level">Level 3 Anomaly</span>
+                    </div>
+                    <div class="card-content">
+                        <div id="globalMap"></div>
+                        <div class="simulation-controls">
+                            <button class="sim-btn active" id="currentState">Current State</button>
+                            <button class="sim-btn" id="hurricaneBtn">Hurricane Sim</button>
+                            <button class="sim-btn" id="tsunamiBtn">Tsunami Sim</button>
+                            <button class="sim-btn" id="stormBtn">Storm Sim</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-title">Atmospheric Pressure</div>
+                    <div class="card-content">
+                        <canvas id="pressureChart"></canvas>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-title">Temperature Deviation</div>
+                    <div class="card-content">
+                        <canvas id="tempChart"></canvas>
+                    </div>
+                </div>
+                
+                <div class="card" style="grid-column: 2 / 4; grid-row: 3 / 4;">
+                    <div class="card-title">System Alerts</div>
+                    <div class="card-content">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Location</th>
+                                    <th>Event</th>
+                                    <th>Severity</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr class="alert-row">
+                                    <td>08:42:15</td>
+                                    <td>Pacific Ocean</td>
+                                    <td>Tsunami Warning</td>
+                                    <td>Critical</td>
+                                    <td>Active</td>
+                                </tr>
+                                <tr>
+                                    <td>07:38:21</td>
+                                    <td>Atlantic Basin</td>
+                                    <td>Hurricane Formation</td>
+                                    <td>High</td>
+                                    <td>Monitoring</td>
+                                </tr>
+                                <tr>
+                                    <td>06:15:49</td>
+                                    <td>Mexico</td>
+                                    <td>Earthquake</td>
+                                    <td>Medium</td>
+                                    <td>Resolved</td>
+                                </tr>
+                                <tr>
+                                    <td>05:22:07</td>
+                                    <td>Siberia</td>
+                                    <td>Temperature Anomaly</td>
+                                    <td>Low</td>
+                                    <td>Resolved</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                
+                <div class="card" style="grid-column: 1 / 2; grid-row: 3 / 4;">
+                    <div class="card-title">System Status & Resilience</div>
+                    <div class="card-content">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>System</th>
+                                    <th>Status</th>
+                                    <th>Redundancy</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>Satellite Network</td>
+                                    <td style="color: #5f5;">Online</td>
+                                    <td>
+                                        <div style="width: 60px; height: 6px; background: #333; border-radius: 3px; overflow: hidden;">
+                                            <div style="width: 80%; height: 100%; background: #5f5;"></div>
+                                        </div>
+                                        <span style="font-size: 9px;">4/5 Backups</span>
+                                    </td>
+                                </tr>
+                                <tr style="background-color: rgba(255, 50, 50, 0.1);">
+                                    <td>Climate Stabilizers</td>
+                                    <td style="color: #f55;">Compromised</td>
+                                    <td>
+                                        <div style="width: 60px; height: 6px; background: #333; border-radius: 3px; overflow: hidden;">
+                                            <div style="width: 40%; height: 100%; background: #f55;"></div>
+                                        </div>
+                                        <span style="font-size: 9px;">2/5 Backups</span>
+                                        <button style="font-size: 8px; padding: 2px 4px; background: #444; border: none; color: #ddd; border-radius: 2px; margin-left: 5px; cursor: pointer;">Restore</button>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td>Neural Network</td>
+                                    <td style="color: #5f5;">Online</td>
+                                    <td>
+                                        <div style="width: 60px; height: 6px; background: #333; border-radius: 3px; overflow: hidden;">
+                                            <div style="width: 100%; height: 100%; background: #5f5;"></div>
+                                        </div>
+                                        <span style="font-size: 9px;">3/3 Backups</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td>Power Grid</td>
+                                    <td style="color: #5f5;">Online</td>
+                                    <td>
+                                        <div style="width: 60px; height: 6px; background: #333; border-radius: 3px; overflow: hidden;">
+                                            <div style="width: 67%; height: 100%; background: #ff5;"></div>
+                                        </div>
+                                        <span style="font-size: 9px;">2/3 Backups</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td>Emergency Systems</td>
+                                    <td style="color: #5f5;">Online</td>
+                                    <td>
+                                        <div style="width: 60px; height: 6px; background: #333; border-radius: 3px; overflow: hidden;">
+                                            <div style="width: 100%; height: 100%; background: #5f5;"></div>
+                                        </div>
+                                        <span style="font-size: 9px;">Isolated</span>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <div style="margin-top: 10px; display: flex; justify-content: space-between;">
+                            <button style="font-size: 10px; padding: 4px 8px; background: #333; border: none; color: #ddd; border-radius: 3px; cursor: pointer;">Detailed Status</button>
+                            <button style="font-size: 10px; padding: 4px 8px; background: #444; border: none; color: #ddd; border-radius: 3px; cursor: pointer;">Failover Options</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="alert-popup">
+                <div class="alert-title">
+                    <div class="alert-icon"></div>
+                    CRITICAL ALERT: TSUNAMI WARNING
+                </div>
+                <div class="alert-message">
+                    <p>Tsunami warning detected in Pacific Ocean region. Wave height estimated at 15.2 meters.</p>
+                    <p>Estimated impact: <strong>45 minutes</strong> to Hawaiian Islands, <strong>3.5 hours</strong> to West Coast.</p>
+                    <p>Affected population: <strong>Est. 2.3M people</strong></p>
+                </div>
+                <div style="margin: 10px 0; border-top: 1px solid #333; padding-top: 10px;">
+                    <div style="font-size: 14px; margin-bottom: 5px;">Response Options:</div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+                        <button class="btn btn-primary" style="font-size: 11px; text-align: left; display: flex; flex-direction: column;">
+                            <strong>LEVEL 1: MONITOR</strong>
+                            <span style="font-size: 9px; opacity: 0.8;">Continue tracking, no active intervention</span>
+                        </button>
+                        <button class="btn btn-primary" style="font-size: 11px; text-align: left; display: flex; flex-direction: column;">
+                            <strong>LEVEL 2: LOCAL ALERT</strong>
+                            <span style="font-size: 9px; opacity: 0.8;">Notify regional authorities only</span>
+                        </button>
+                        <button class="btn btn-primary" style="font-size: 11px; text-align: left; display: flex; flex-direction: column;">
+                            <strong>LEVEL 3: EVACUATION</strong>
+                            <span style="font-size: 9px; opacity: 0.8;">Trigger coastal evacuation protocols</span>
+                        </button>
+                        <button class="btn btn-danger" style="font-size: 11px; text-align: left; display: flex; flex-direction: column;">
+                            <strong>LEVEL 4: INTERVENTION</strong>
+                            <span style="font-size: 9px; opacity: 0.8;">Activate wave dampening systems</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="btn-group" style="border-top: 1px solid #333; padding-top: 10px; display: flex; justify-content: space-between;">
+                    <button class="btn" style="background-color: #333;">System Log</button>
+                    <div>
+                        <button class="btn" style="background-color: #333;">Transfer to Team</button>
+                        <button class="btn btn-primary" id="dismissAlert">Dismiss</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <footer>
+            <div>HEPHAELION System v3.7.2 | Authorized Access Only | Last Updated: 03/01/2025 09:15:22 UTC</div>
+        </footer>
+    </div>
+    
+    <script>
+        // Canvas drawing for global map
+        const globalMap = document.getElementById('globalMap');
+        const ctx = globalMap.getContext('2d');
+        const width = globalMap.width = globalMap.clientWidth;
+        const height = globalMap.height = globalMap.clientHeight * 0.85;
+        
+        // Draw world map outline
+        function drawMap() {
+            ctx.clearRect(0, 0, width, height);
+            
+            // Simple world map approximation
+            ctx.strokeStyle = '#444';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            
+            // North America
+            ctx.moveTo(width * 0.1, height * 0.3);
+            ctx.lineTo(width * 0.25, height * 0.2);
+            ctx.lineTo(width * 0.25, height * 0.5);
+            ctx.lineTo(width * 0.15, height * 0.6);
+            ctx.lineTo(width * 0.1, height * 0.3);
+            
+            // South America
+            ctx.moveTo(width * 0.25, height * 0.5);
+            ctx.lineTo(width * 0.3, height * 0.8);
+            ctx.lineTo(width * 0.22, height * 0.85);
+            ctx.lineTo(width * 0.15, height * 0.6);
+            
+            // Europe & Africa
+            ctx.moveTo(width * 0.4, height * 0.2);
+            ctx.lineTo(width * 0.45, height * 0.4);
+            ctx.lineTo(width * 0.4, height * 0.8);
+            ctx.lineTo(width * 0.5, height * 0.7);
+            ctx.lineTo(width * 0.55, height * 0.4);
+            ctx.lineTo(width * 0.5, height * 0.25);
+            ctx.lineTo(width * 0.4, height * 0.2);
+            
+            // Asia & Australia
+            ctx.moveTo(width * 0.5, height * 0.25);
+            ctx.lineTo(width * 0.8, height * 0.25);
+            ctx.lineTo(width * 0.85, height * 0.5);
+            ctx.lineTo(width * 0.75, height * 0.6);
+            ctx.lineTo(width * 0.55, height * 0.4);
+            
+            ctx.moveTo(width * 0.75, height * 0.6);
+            ctx.lineTo(width * 0.85, height * 0.8);
+            ctx.lineTo(width * 0.75, height * 0.85);
+            ctx.lineTo(width * 0.65, height * 0.7);
+            ctx.lineTo(width * 0.75, height * 0.6);
+            
+            ctx.stroke();
+            
+            // Grid lines
+            ctx.strokeStyle = '#222';
+            ctx.lineWidth = 0.5;
+            
+            // Latitude lines
+            for (let i = 1; i < 10; i++) {
+                ctx.beginPath();
+                ctx.moveTo(0, height * i/10);
+                ctx.lineTo(width, height * i/10);
+                ctx.stroke();
+            }
+            
+            // Longitude lines
+            for (let i = 1; i < 10; i++) {
+                ctx.beginPath();
+                ctx.moveTo(width * i/10, 0);
+                ctx.lineTo(width * i/10, height);
+                ctx.stroke();
+            }
+        }
+        
+        // Simulate a hurricane
+        function simulateHurricane() {
+            drawMap();
+            
+            // Draw hurricane
+            let centerX = width * 0.2;
+            let centerY = height * 0.4;
+            let radius = 30;
+            let opacity = 0.7;
+            
+            for (let i = 0; i < 5; i++) {
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, radius - i * 5, 0, Math.PI * 2);
+                ctx.strokeStyle = `rgba(100, 200, 255, ${opacity - i * 0.1})`;
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+            
+            // Animating the hurricane would require requestAnimationFrame
+            // This is just a static representation
+        }
+        
+        // Simulate a tsunami
+        function simulateTsunami() {
+            drawMap();
+            
+            // Draw tsunami wave fronts
+            ctx.strokeStyle = '#4488ff';
+            ctx.lineWidth = 2;
+            
+            let centerX = width * 0.7;
+            let centerY = height * 0.6;
+            
+            for (let i = 1; i < 6; i++) {
+                let radius = i * 30;
+                let opacity = 1 - i * 0.15;
+                
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+                ctx.strokeStyle = `rgba(100, 150, 255, ${opacity})`;
+                ctx.stroke();
+            }
+        }
+        
+        // Simulate lightning storms
+        function simulateStorms() {
+            drawMap();
+            
+            // Draw storm cells
+            function drawStormCell(x, y, size) {
+                ctx.fillStyle = 'rgba(200, 200, 255, 0.2)';
+                ctx.beginPath();
+                ctx.arc(x, y, size, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Lightning bolts
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(x, y - size/2);
+                ctx.lineTo(x + size/4, y);
+                ctx.lineTo(x - size/3, y + size/3);
+                ctx.lineTo(x, y + size);
+                ctx.stroke();
+            }
+            
+            // Draw a few storm cells
+            drawStormCell(width * 0.3, height * 0.4, 25);
+            drawStormCell(width * 0.6, height * 0.3, 30);
+            drawStormCell(width * 0.5, height * 0.7, 20);
+        }
+        
+        // Initial map draw
+        drawMap();
+        
+        // Event listeners for simulation buttons
+        document.getElementById('currentState').addEventListener('click', function() {
+            resetButtons();
+            this.classList.add('active');
+            drawMap();
+        });
+        
+        document.getElementById('hurricaneBtn').addEventListener('click', function() {
+            resetButtons();
+            this.classList.add('active');
+            simulateHurricane();
+        });
+        
+        document.getElementById('tsunamiBtn').addEventListener('click', function() {
+            resetButtons();
+            this.classList.add('active');
+            simulateTsunami();
+        });
+        
+        document.getElementById('stormBtn').addEventListener('click', function() {
+            resetButtons();
+            this.classList.add('active');
+            simulateStorms();
+        });
+        
+        function resetButtons() {
+            document.querySelectorAll('.sim-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+        }
+        
+        // Charts
+        function drawChart(canvasId, type = 'pressure') {
+            const canvas = document.getElementById(canvasId);
+            const ctx = canvas.getContext('2d');
+            const width = canvas.width = canvas.clientWidth;
+            const height = canvas.height = canvas.clientHeight;
+            
+            ctx.clearRect(0, 0, width, height);
+            
+            // Grid
+            ctx.strokeStyle = '#222';
+            ctx.lineWidth = 0.5;
+            
+            // Horizontal grid lines
+            for (let i = 1; i < 5; i++) {
+                ctx.beginPath();
+                ctx.moveTo(0, height * i/5);
+                ctx.lineTo(width, height * i/5);
+                ctx.stroke();
+            }
+            
+            // Vertical grid lines
+            for (let i = 1; i < 10; i++) {
+                ctx.beginPath();
+                ctx.moveTo(width * i/10, 0);
+                ctx.lineTo(width * i/10, height);
+                ctx.stroke();
+            }
+            
+            // Generate data points
+            let data = [];
+            for (let i = 0; i < 20; i++) {
+                if (type === 'pressure') {
+                    // Cyclical pattern with anomaly
+                    data.push(Math.sin(i/3) * 20 + 50 + (i > 15 ? 15 : 0));
+                } else {
+                    // Rising temperature with fluctuations
+                    data.push(40 + i * 1.5 + Math.random() * 5);
+                }
+            }
+            
+            // Plot line
+            ctx.strokeStyle = type === 'pressure' ? '#4488ff' : '#ff4444';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            
+            for (let i = 0; i < data.length; i++) {
+                const x = (width / data.length) * i;
+                const y = height - (height * (data[i] / 100));
+                
+                if (i === 0) {
+                    ctx.moveTo(x, y);
+                } else {
+                    ctx.lineTo(x, y);
+                }
+            }
+            
+            ctx.stroke();
+            
+            // Critical threshold line
+            if (type === 'temperature') {
+                ctx.strokeStyle = 'rgba(255, 100, 100, 0.4)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(0, height * 0.2);
+                ctx.lineTo(width, height * 0.2);
+                ctx.stroke();
+                
+                // Label
+                ctx.fillStyle = 'rgba(255, 100, 100, 0.7)';
+                ctx.font = '10px Courier New';
+                ctx.fillText('CRITICAL THRESHOLD', 10, height * 0.18);
+            }
+        }
+        
+        // Draw initial charts
+        drawChart('pressureChart', 'pressure');
+        drawChart('tempChart', 'temperature');
+        
+        // Dismiss alert
+        document.getElementById('dismissAlert').addEventListener('click', function() {
+            document.querySelector('.alert-popup').style.display = 'none';
+        });
+        
+        // Resize handling
+        window.addEventListener('resize', function() {
+            // Redraw canvases on resize
+            drawMap();
+            drawChart('pressureChart', 'pressure');
+            drawChart('tempChart', 'temperature');
+        });
+    </script>
+</body>
+</html>
