@@ -23,7 +23,7 @@ DATA_ROOT = "/Users/shkh/Downloads/eo4wildfires"
 NUM_FILES = 200  # Small subset for testing
 BATCH_SIZE = 2
 NUM_EPOCHS = 3
-PATCH_SIZE = 256
+PATCH_SIZE = 128
 
 print(f"Testing wildfire pipeline on {NUM_FILES} files...")
 
@@ -50,7 +50,8 @@ train_dataset = EO4WildFiresDataset(
     mode='train',
     task='multitask',
     normalize_stats=norm_stats,
-    augment=True
+    augment=True,
+    min_burn_ratio=0.0
 )
 
 val_dataset = EO4WildFiresDataset(
@@ -61,7 +62,8 @@ val_dataset = EO4WildFiresDataset(
     mode='val',
     task='multitask',
     normalize_stats=norm_stats,
-    augment=False
+    augment=False,
+    min_burn_ratio=0.0
 )
 
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
@@ -71,7 +73,7 @@ print(f"   Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
 
 # 4. Create model
 print("\n4. Creating model...")
-device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+device = torch.device('cuda' if torch.cuda.is_available() else ('mps' if torch.backends.mps.is_available() else 'cpu'))
 print(f"   Device: {device}")
 
 model = UNetWithWeather(

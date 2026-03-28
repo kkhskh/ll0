@@ -136,7 +136,8 @@ class EO4WildFiresDataset(Dataset):
         
         # Sentinel-1 normalization (dB values, typically -30 to 10)
         if 's1_mean' in self.normalize_stats:
-            s1_data = (s1_data - self.normalize_stats['s1_mean']) / self.normalize_stats['s1_std']
+            s1_std = max(self.normalize_stats.get('s1_std', 0.0), 1e-6)
+            s1_data = (s1_data - self.normalize_stats['s1_mean']) / s1_std
         else:
             # Default normalization for SAR data
             s1_data = np.clip(s1_data, -30, 10)
@@ -144,7 +145,8 @@ class EO4WildFiresDataset(Dataset):
         
         # Sentinel-2 normalization (reflectance values 0-1)
         if 's2_mean' in self.normalize_stats:
-            s2_data = (s2_data - self.normalize_stats['s2_mean']) / self.normalize_stats['s2_std']
+            s2_std = max(self.normalize_stats.get('s2_std', 0.0), 1e-6)
+            s2_data = (s2_data - self.normalize_stats['s2_mean']) / s2_std
         else:
             # Default normalization for optical data
             s2_data = np.clip(s2_data, 0, 1)
@@ -154,7 +156,8 @@ class EO4WildFiresDataset(Dataset):
     def normalize_weather(self, weather_data: np.ndarray) -> np.ndarray:
         """Normalize weather time series"""
         if 'weather_mean' in self.normalize_stats:
-            weather_data = (weather_data - self.normalize_stats['weather_mean']) / self.normalize_stats['weather_std']
+            weather_std = max(self.normalize_stats.get('weather_std', 0.0), 1e-6)
+            weather_data = (weather_data - self.normalize_stats['weather_mean']) / weather_std
         else:
             # Z-score normalization per feature
             weather_data = (weather_data - np.nanmean(weather_data, axis=0)) / (np.nanstd(weather_data, axis=0) + 1e-8)
@@ -526,13 +529,17 @@ def compute_normalization_stats(data_dir: str, file_list: list, sample_size: int
     s2_all = np.concatenate(s2_values)
     weather_all = np.concatenate(weather_values)
     
+    s1_std = np.nanstd(s1_all)
+    s2_std = np.nanstd(s2_all)
+    weather_std = np.nanstd(weather_all)
+
     stats = {
         's1_mean': np.nanmean(s1_all),
-        's1_std': np.nanstd(s1_all),
+        's1_std': max(s1_std, 1e-6),
         's2_mean': np.nanmean(s2_all),
-        's2_std': np.nanstd(s2_all),
+        's2_std': max(s2_std, 1e-6),
         'weather_mean': np.nanmean(weather_all),
-        'weather_std': np.nanstd(weather_all)
+        'weather_std': max(weather_std, 1e-6)
     }
     
     logger.info("Computed normalization statistics")
