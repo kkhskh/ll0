@@ -24,6 +24,7 @@ NUM_FILES = 200  # Small subset for testing
 BATCH_SIZE = 2
 NUM_EPOCHS = 3
 PATCH_SIZE = 128
+TASK = "segmentation"
 
 print(f"Testing wildfire pipeline on {NUM_FILES} files...")
 
@@ -48,7 +49,7 @@ train_dataset = EO4WildFiresDataset(
     patch_size=PATCH_SIZE,
     overlap=0.0,
     mode='train',
-    task='multitask',
+    task=TASK,
     normalize_stats=norm_stats,
     augment=True,
     min_burn_ratio=0.0
@@ -60,7 +61,7 @@ val_dataset = EO4WildFiresDataset(
     patch_size=PATCH_SIZE,
     overlap=0.0,
     mode='val',
-    task='multitask',
+    task=TASK,
     normalize_stats=norm_stats,
     augment=False,
     min_burn_ratio=0.0
@@ -80,11 +81,11 @@ model = UNetWithWeather(
     in_channels=10,  # 4 (S1) + 6 (S2)
     weather_features=9,
     weather_timesteps=31,
-    task='multitask',
+    task=TASK,
     dropout=0.3
 ).to(device)
 
-criterion = WildfireLoss(seg_weight=0.6, reg_weight=0.4)
+criterion = WildfireLoss(task=TASK, seg_weight=1.0, reg_weight=0.0)
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 
 print(f"   Parameters: {sum(p.numel() for p in model.parameters()):,}")

@@ -200,12 +200,17 @@ class EO4WildFiresDataset(Dataset):
             # Extract targets
             burned_mask = ds.burned_mask.isel(y=slice(y_start, y_end), x=slice(x_start, x_end)).values
             burned_area = float(ds.BURNED_AREA.values)
+            if not np.isfinite(burned_area):
+                burned_area = 0.0
             
             ds.close()
             
             # Normalize data
             s1_data, s2_data = self.normalize_imagery(s1_data, s2_data)
             weather_data = self.normalize_weather(weather_data)
+            s1_data = np.nan_to_num(s1_data, nan=0.0, posinf=0.0, neginf=0.0)
+            s2_data = np.nan_to_num(s2_data, nan=0.0, posinf=0.0, neginf=0.0)
+            weather_data = np.nan_to_num(weather_data, nan=0.0, posinf=0.0, neginf=0.0)
             
             # Combine satellite imagery (12 channels total)
             imagery = np.concatenate([s1_data, s2_data], axis=0)  # Shape: (12, H, W)
