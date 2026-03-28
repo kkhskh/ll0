@@ -227,6 +227,7 @@ class EO4WildFiresDataset(Dataset):
                 
                 imagery = np.transpose(transformed['image'], (2, 0, 1))
                 burned_mask = transformed['burned_mask']
+                burned_mask = np.clip(burned_mask, 0.0, 1.0)
             
             # Convert to tensors
             imagery = torch.from_numpy(imagery).float()
@@ -411,6 +412,7 @@ class WildfireLoss(nn.Module):
         
         if self.task in ['segmentation', 'multitask']:
             seg_pred = outputs['segmentation'].squeeze(1)
+            seg_pred = torch.nan_to_num(seg_pred, nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
             burned_mask = targets['burned_mask']
             valid_mask = targets['valid_mask']
             
