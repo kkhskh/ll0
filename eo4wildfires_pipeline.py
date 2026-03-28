@@ -210,9 +210,10 @@ class EO4WildFiresDataset(Dataset):
             # Combine satellite imagery (12 channels total)
             imagery = np.concatenate([s1_data, s2_data], axis=0)  # Shape: (12, H, W)
             
-            # Handle burned mask NaNs
+            # Handle burned mask NaNs and clamp to [0, 1]
             burned_mask_valid = ~np.isnan(burned_mask)
             burned_mask = np.nan_to_num(burned_mask, nan=0.0)
+            burned_mask = np.clip(burned_mask, 0.0, 1.0)
             
             # Apply augmentations
             if self.transform:
