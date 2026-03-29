@@ -5,6 +5,8 @@ Run locally on your Mac to verify the pipeline works.
 
 import torch
 import sys
+import os
+import json
 from pathlib import Path
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -25,6 +27,13 @@ BATCH_SIZE = 2
 NUM_EPOCHS = 3
 PATCH_SIZE = 128
 TASK = "segmentation"
+SAVE_EVERY = 1
+RESUME = True
+
+# Output directory (Drive if available)
+DEFAULT_OUTPUT = "/content/drive/MyDrive/ll0_checkpoints"
+OUTPUT_DIR = DEFAULT_OUTPUT if os.path.exists(DEFAULT_OUTPUT) else "artifacts"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 print(f"Testing wildfire pipeline on {NUM_FILES} files...")
 
@@ -91,8 +100,37 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 print(f"   Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
 # 5. Train for 3 epochs
+def save_checkpoint(epoch, model, optimizer, history, best_val, tag="latest"):
+    ckpt = {
+        "epoch": epoch,
+        "model_state": model.state_dict(),
+        "optimizer_state": optimizer.state_dict(),
+        "history": history,
+        "best_val": best_val
+    }
+    path = os.path.join(OUTPUT_DIR, f"wildfire_{tag}.pth")
+    torch.save(ckpt, path)
+    return path
+
+def load_checkpoint(path, model, optimizer):
+    ckpt = torch.load(path, map_location="cpu")
+    model.load_state_dict(ckpt["model_state"])
+    optimizer.load_state_dict(ckpt["optimizer_state"])
+    return ckpt
+
 print("\n5. Training...")
-for epoch in range(NUM_EPOCHS):
+start_epoch = 0
+best_val = float("inf")
+history = {"train_loss": [], "val_loss": []}
+
+latest_ckpt_path = os.path.join(OUTPUT_DIR, "wildfire_latest.pth")
+if RESUME and os.path.exists(latest_ckpt_path):
+    ckpt = load_checkpoint(latest_ckpt_path, model, optimizer)
+    start_epoch = ckpt.get("epoch", -1) + 1
+    history = ckpt.get("history", history)
+    best_val = ckpt.get("best_val", best_val)
+    print(f"   Resuming from epoch {start_epoch}")
+for epoch in range(start_epoch, NUM_EPOCHS):
     model.train()
     train_loss = 0
     
@@ -123,38 +161,51 @@ for epoch in range(NUM_EPOCHS):
     
     avg_loss = train_loss / len(train_loader)
     print(f"   Epoch {epoch+1} avg loss: {avg_loss:.4f}")
+    history["train_loss"].append(avg_loss)
 
-# 6. Test on validation
-print("\n6. Validating...")
-if len(val_loader) == 0:
-    print("   Skipping validation (no validation batches).")
-else:
-    model.eval()
-    val_loss = 0
+    # 6. Validate each epoch
+    print("\n6. Validating...")
+    if len(val_loader) == 0:
+        print("   Skipping validation (no validation batches).")
+        avg_val_loss = float("inf")
+    else:
+        model.eval()
+        val_loss = 0
+        
+        with torch.no_grad():
+            for batch in tqdm(val_loader, desc="Validation"):
+                imagery = batch['imagery'].to(device)
+                weather = batch['weather'].to(device)
+                burn_mask = batch['burned_mask'].to(device)
+                burned_area = batch['burned_area'].to(device)
+                valid_mask = batch['valid_mask'].to(device)
+                
+                outputs = model(imagery, weather)
+                loss_dict = criterion(outputs, {
+                    'burned_mask': burn_mask,
+                    'burned_area': burned_area,
+                    'valid_mask': valid_mask
+                })
+                val_loss += loss_dict['total'].item()
+        
+        avg_val_loss = val_loss / len(val_loader)
+        print(f"   Validation loss: {avg_val_loss:.4f}")
     
-    with torch.no_grad():
-        for batch in tqdm(val_loader, desc="Validation"):
-            imagery = batch['imagery'].to(device)
-            weather = batch['weather'].to(device)
-            burn_mask = batch['burned_mask'].to(device)
-            burned_area = batch['burned_area'].to(device)
-            valid_mask = batch['valid_mask'].to(device)
-            
-            outputs = model(imagery, weather)
-            loss_dict = criterion(outputs, {
-                'burned_mask': burn_mask,
-                'burned_area': burned_area,
-                'valid_mask': valid_mask
-            })
-            val_loss += loss_dict['total'].item()
+    history["val_loss"].append(avg_val_loss)
     
-    avg_val_loss = val_loss / len(val_loader)
-    print(f"   Validation loss: {avg_val_loss:.4f}")
+    # Save checkpoints
+    if (epoch + 1) % SAVE_EVERY == 0:
+        save_checkpoint(epoch, model, optimizer, history, best_val, tag="latest")
+    if avg_val_loss < best_val:
+        best_val = avg_val_loss
+        save_checkpoint(epoch, model, optimizer, history, best_val, tag="best")
 
-# 7. Save test model
+# 7. Save final model + history
 print("\n7. Saving model...")
-torch.save(model.state_dict(), 'wildfire_test_model.pth')
-print("   Saved: wildfire_test_model.pth")
+final_path = save_checkpoint(NUM_EPOCHS - 1, model, optimizer, history, best_val, tag="final")
+with open(os.path.join(OUTPUT_DIR, "history.json"), "w") as f:
+    json.dump(history, f, indent=2)
+print(f"   Saved: {final_path}")
 
 print("\n✅ Pipeline test complete!")
 print(f"\nYour existing pipeline WORKS. Now scale to full dataset when ready.")
