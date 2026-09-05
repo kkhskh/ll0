@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from time import perf_counter
 
 import numpy as np
 import pandas as pd
@@ -35,6 +37,7 @@ LOWER_RIGHT_PATTERN = re.compile(r"LowerRightMtrs=\(([-0-9.]+),([-0-9.]+)\)")
 MCD64A1_PIXEL_SIZE_M = 463.312716528
 MCD64A1_PIXEL_AREA_KM2 = (MCD64A1_PIXEL_SIZE_M ** 2) / 1_000_000.0
 MODIS_SINUSOIDAL_PROJ = "+proj=sinu +R=6371007.181 +nadgrids=@null +wktext"
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -233,13 +236,34 @@ def aggregate_mcd64a1_folder(
     config: LabelBuilderConfig,
     start_month: str,
     end_month: str,
+    log_every: int = 50,
 ) -> pd.DataFrame:
     transformer = Transformer.from_crs(MODIS_SINUSOIDAL_PROJ, "EPSG:4326", always_xy=True)
     grouped_files = iter_mcd64a1_files(input_path=input_path, start_month=start_month, end_month=end_month)
 
+    month_items = list(grouped_files.items())
+    total_months = len(month_items)
+    total_files = sum(len(month_files) for _, month_files in month_items)
+    overall_start = perf_counter()
+    processed_files = 0
+    LOGGER.info(
+        "Starting MCD64A1 aggregation for %s months and %s files from %s",
+        total_months,
+        total_files,
+        input_path,
+    )
+
     monthly_cell_counts: dict[tuple[str, str], int] = defaultdict(int)
-    for month, month_files in grouped_files.items():
-        for file_path in month_files:
+    for month_idx, (month, month_files) in enumerate(month_items, start=1):
+        month_start = perf_counter()
+        LOGGER.info(
+            "Processing month %s (%s/%s) with %s files",
+            month,
+            month_idx,
+            total_months,
+            len(month_files),
+        )
+        for file_idx, file_path in enumerate(month_files, start=1):
             tile_counts = aggregate_mcd64a1_tile(
                 file_path=file_path,
                 grid_spec=config.grid_spec,
@@ -247,9 +271,63 @@ def aggregate_mcd64a1_folder(
             )
             for cell_id, burned_pixel_count in tile_counts.items():
                 monthly_cell_counts[(month, cell_id)] += burned_pixel_count
+            processed_files += 1
+
+            should_log_progress = (
+                file_idx == 1
+                or file_idx == len(month_files)
+                or file_idx % max(log_every, 1) == 0
+            )
+            if should_log_progress:
+                month_elapsed_seconds = perf_counter() - month_start
+                total_elapsed_seconds = perf_counter() - overall_start
+                month_rate = file_idx / month_elapsed_seconds if month_elapsed_seconds > 0 else 0.0
+                remaining_month_files = len(month_files) - file_idx
+                remaining_month_minutes = (
+                    (remaining_month_files / month_rate) / 60.0 if month_rate > 0 else None
+                )
+                overall_pct = (processed_files / total_files) * 100.0 if total_files else 100.0
+                message = (
+                    "Month %s progress: %s/%s files | overall %s/%s (%.1f%%) | "
+                    "month elapsed %.1fm | total elapsed %.1fm"
+                )
+                args: list[object] = [
+                    month,
+                    file_idx,
+                    len(month_files),
+                    processed_files,
+                    total_files,
+                    overall_pct,
+                    month_elapsed_seconds / 60.0,
+                    total_elapsed_seconds / 60.0,
+                ]
+                if remaining_month_minutes is not None:
+                    message += " | est %.1fm remaining in current month"
+                    args.append(remaining_month_minutes)
+                LOGGER.info(message, *args)
+
+        month_rows = sum(1 for key_month, _ in monthly_cell_counts if key_month == month)
+        month_burned_pixels = sum(
+            burned_pixel_count
+            for (key_month, _), burned_pixel_count in monthly_cell_counts.items()
+            if key_month == month
+        )
+        LOGGER.info(
+            "Completed month %s with %s active cells and %s burned pixels in %.1fm",
+            month,
+            month_rows,
+            month_burned_pixels,
+            (perf_counter() - month_start) / 60.0,
+        )
 
     if not monthly_cell_counts:
         raise ValueError("No burned pixels were found in the requested MCD64A1 range")
+
+    LOGGER.info(
+        "Finished MCD64A1 aggregation in %.1fm with %s month-cell records",
+        (perf_counter() - overall_start) / 60.0,
+        len(monthly_cell_counts),
+    )
 
     monthly = pd.DataFrame(
         [
@@ -282,6 +360,7 @@ def build_label_table(
     run_root: str | Path | None = None,
     run_name: str | None = None,
     output_name: str = "label_table.csv",
+    log_every: int = 50,
 ) -> pd.DataFrame:
     config = LabelBuilderConfig(
         grid_spec=GridSpec(resolution_deg=resolution_deg),
@@ -295,6 +374,14 @@ def build_label_table(
     inferred_format = input_format
     if inferred_format == "auto":
         inferred_format = "mcd64a1-hdf" if input_path.is_dir() else "csv"
+    LOGGER.info(
+        "Building labels from %s using format %s for %s to %s at %.3f degree resolution",
+        input_path,
+        inferred_format,
+        start_month,
+        end_month,
+        resolution_deg,
+    )
 
     if inferred_format == "csv":
         burn_records = load_burn_records(input_path, config=config)
@@ -310,6 +397,7 @@ def build_label_table(
             config=config,
             start_month=start_month,
             end_month=end_month,
+            log_every=log_every,
         )
 
     layout = None
@@ -322,6 +410,7 @@ def build_label_table(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     label_table.to_csv(output_path, index=False)
+    LOGGER.info("Saved label table to %s", output_path)
 
     if layout is not None:
         write_stage_manifest(
@@ -371,7 +460,17 @@ def main() -> None:
         default="label_table.csv",
         help="Label filename when using --run-root",
     )
+    parser.add_argument(
+        "--log-every",
+        type=int,
+        default=50,
+        help="How many files to process between progress log messages during MCD64A1 ingestion.",
+    )
     args = parser.parse_args()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+    )
 
     label_table = build_label_table(
         input_path=args.input,
@@ -384,6 +483,7 @@ def main() -> None:
         run_root=args.run_root,
         run_name=args.run_name,
         output_name=args.output_name,
+        log_every=args.log_every,
     )
     print(
         "Built label table with "
