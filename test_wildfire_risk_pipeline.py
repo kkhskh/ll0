@@ -9,10 +9,42 @@ from wildfire_risk.build_features import build_feature_table
 from wildfire_risk.build_labels import build_label_table
 from wildfire_risk.grid import GridSpec, create_global_grid, create_month_index
 from wildfire_risk.render_maps import render_monthly_risk_maps
-from wildfire_risk.train_baseline import TrainConfig, train_baseline_models
+from wildfire_risk.train_baseline import TrainConfig, select_feature_columns, train_baseline_models
 
 
 class WildfireRiskPipelineTest(unittest.TestCase):
+    def test_feature_builder_and_trainer_exclude_same_month_label_leakage(self) -> None:
+        labels = pd.DataFrame(
+            {
+                "cell_id": ["000_000", "000_000", "000_000"],
+                "month": ["2024-01", "2024-02", "2024-03"],
+                "year": [2024, 2024, 2024],
+                "month_num": [1, 2, 3],
+                "lat_center": [0.25, 0.25, 0.25],
+                "lon_center": [0.25, 0.25, 0.25],
+                "cell_area_km2": [1000.0, 1000.0, 1000.0],
+                "burned_area_km2": [0.0, 10.0, 20.0],
+                "burned_fraction": [0.0, 0.01, 0.02],
+                "binary_risk_label": [0, 1, 1],
+                "burned_pixel_count": [0, 5, 10],
+                "burned_event_count": [0, 1, 2],
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            labels_path = Path(tmp_dir) / "labels.csv"
+            labels.to_csv(labels_path, index=False)
+
+            features = build_feature_table(labels_path=labels_path, output_path=Path(tmp_dir) / "features.csv")
+            self.assertNotIn("burned_pixel_count_month_anom", features.columns)
+            self.assertNotIn("burned_event_count_month_anom", features.columns)
+
+            feature_columns = select_feature_columns(features)
+            self.assertNotIn("burned_pixel_count", feature_columns)
+            self.assertNotIn("burned_event_count", feature_columns)
+            self.assertNotIn("cell_area_km2", feature_columns)
+            self.assertIn("burned_fraction_lag_1", feature_columns)
+
     def test_end_to_end_pipeline_on_synthetic_data(self) -> None:
         rng = np.random.default_rng(7)
         grid_spec = GridSpec(resolution_deg=30.0)

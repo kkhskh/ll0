@@ -29,9 +29,12 @@ NON_FEATURE_COLUMNS = {
     "month_num",
     "lat_center",
     "lon_center",
+    "cell_area_km2",
     "binary_risk_label",
     "burned_fraction",
     "burned_area_km2",
+    "burned_pixel_count",
+    "burned_event_count",
 }
 
 

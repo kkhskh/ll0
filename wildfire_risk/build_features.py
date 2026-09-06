@@ -24,6 +24,7 @@ ID_COLUMNS = {
     "binary_risk_label",
     "burned_fraction",
     "burned_area_km2",
+    "burned_pixel_count",
     "burned_event_count",
 }
 
