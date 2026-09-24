@@ -124,7 +124,7 @@
         }
     </style>
 </head>
-<body>
+<body data-dashboard-mode="wildfire-investor">
     <div class="container">
         <header>
             <div class="logo">
@@ -134,16 +134,16 @@
             </div>
             <div class="header-controls">
                 <div class="global-status">
-                    <span class="status-label">GLOBAL STATUS:</span>
-                    <span class="status-value">OPERATIONAL</span>
+                    <span class="status-label">SIGNAL MODE:</span>
+                    <span class="status-value" id="globalStatusValue">RANKED</span>
                 </div>
                 <div class="satellite-status">
-                    <span class="status-label">SATELLITES ONLINE:</span>
-                    <span class="status-value">24/25</span>
+                    <span class="status-label">ACTIVE RUN:</span>
+                    <span class="status-value" id="activeRunValue">LOADING</span>
                 </div>
                 <div class="auth-status">
                     <span class="user-avatar"><i class="fas fa-user-shield"></i></span>
-                    <span>ADMIN ACCESS | SECURITY LEVEL: ALPHA</span>
+                    <span id="guidanceBanner">INVESTOR VIEW | WILDFIRE SIGNALS</span>
                 </div>
             </div>
         </header>
@@ -189,20 +189,23 @@
         
         <div class="main-content">
             <div class="content-header">
-                <h1>Global Disaster Monitoring & Control</h1>
+                <div>
+                    <h1 id="dashboardTitle">Wildfire Investor Intelligence</h1>
+                    <p id="dashboardSubtitle">Loading ranked wildfire signals, exposure watchlists, and model proof points.</p>
+                </div>
                 <div class="header-actions">
-                    <button class="action-btn"><i class="fas fa-sync"></i> Refresh Data</button>
-                    <button class="action-btn"><i class="fas fa-satellite-dish"></i> Satellite Status</button>
-                    <button class="action-btn danger"><i class="fas fa-exclamation-triangle"></i> Emergency Override</button>
+                    <button class="action-btn" id="refreshInvestorData"><i class="fas fa-sync"></i> Refresh Signals</button>
+                    <button class="action-btn" id="openInvestorDocs"><i class="fas fa-chart-line"></i> API Docs</button>
+                    <button class="action-btn danger" id="openRunSummary"><i class="fas fa-fire"></i> Latest Run</button>
                 </div>
             </div>
 
             <div class="dashboard-grid">
                 <div class="card world-map-card">
                     <div class="card-title">
-                        Global Monitoring System
+                        Global Wildfire Risk Signal
                         <div class="card-controls">
-                            <span class="anomaly-level">Level 3 Anomaly</span>
+                            <span class="anomaly-level" id="runStatusBadge">Loading signal</span>
                             <button class="card-control-btn"><i class="fas fa-expand"></i></button>
                         </div>
                     </div>
@@ -243,7 +246,7 @@
                 
                 <div class="card">
                     <div class="card-title">
-                        Atmospheric Pressure
+                        Relative Risk Distribution
                         <div class="card-controls">
                             <button class="card-control-btn"><i class="fas fa-expand"></i></button>
                         </div>
@@ -255,7 +258,7 @@
                 
                 <div class="card">
                     <div class="card-title">
-                        Temperature Deviation
+                        Seasonal Signal Strength
                         <div class="card-controls">
                             <button class="card-control-btn"><i class="fas fa-expand"></i></button>
                         </div>
@@ -267,7 +270,7 @@
                 
                 <div class="card">
                     <div class="card-title">
-                        Satellite Network Status
+                        Investor Signal Snapshot
                         <div class="card-controls">
                             <button class="card-control-btn"><i class="fas fa-cog"></i></button>
                         </div>
@@ -332,7 +335,7 @@
                 
                 <div class="card alerts-card">
                     <div class="card-title">
-                        System Alerts
+                        Watchlist Signals
                         <div class="card-controls">
                             <button class="card-control-btn"><i class="fas fa-bell"></i></button>
                         </div>
@@ -341,69 +344,17 @@
                         <table class="data-table">
                             <thead>
                                 <tr>
-                                    <th>Time</th>
-                                    <th>Location</th>
-                                    <th>Event</th>
-                                    <th>Severity</th>
-                                    <th>Status</th>
-                                    <th>Actions</th>
+                                    <th>Symbol</th>
+                                    <th>Region</th>
+                                    <th>Theme</th>
+                                    <th>Risk Band</th>
+                                    <th>Score</th>
+                                    <th>Cells</th>
                                 </tr>
                             </thead>
-                            <tbody>
-                                <tr class="alert-row critical">
-                                    <td>08:42:15</td>
-                                    <td>Pacific Ocean</td>
-                                    <td>Tsunami Warning</td>
-                                    <td><span class="severity critical">Critical</span></td>
-                                    <td>Active</td>
-                                    <td>
-                                        <button class="table-btn"><i class="fas fa-eye"></i></button>
-                                        <button class="table-btn"><i class="fas fa-shield-alt"></i></button>
-                                    </td>
-                                </tr>
-                                <tr class="alert-row high">
-                                    <td>07:38:21</td>
-                                    <td>Atlantic Basin</td>
-                                    <td>Hurricane Formation</td>
-                                    <td><span class="severity high">High</span></td>
-                                    <td>Monitoring</td>
-                                    <td>
-                                        <button class="table-btn"><i class="fas fa-eye"></i></button>
-                                        <button class="table-btn"><i class="fas fa-shield-alt"></i></button>
-                                    </td>
-                                </tr>
+                            <tbody id="watchlistSignalsBody">
                                 <tr class="alert-row medium">
-                                    <td>06:15:49</td>
-                                    <td>California</td>
-                                    <td>Wildfire Detection</td>
-                                    <td><span class="severity medium">Medium</span></td>
-                                    <td>Intervention</td>
-                                    <td>
-                                        <button class="table-btn"><i class="fas fa-eye"></i></button>
-                                        <button class="table-btn"><i class="fas fa-shield-alt"></i></button>
-                                    </td>
-                                </tr>
-                                <tr class="alert-row medium">
-                                    <td>06:15:49</td>
-                                    <td>Mexico</td>
-                                    <td>Earthquake</td>
-                                    <td><span class="severity medium">Medium</span></td>
-                                    <td>Resolved</td>
-                                    <td>
-                                        <button class="table-btn"><i class="fas fa-eye"></i></button>
-                                        <button class="table-btn"><i class="fas fa-shield-alt"></i></button>
-                                    </td>
-                                </tr>
-                                <tr class="alert-row low">
-                                    <td>05:22:07</td>
-                                    <td>Siberia</td>
-                                    <td>Temperature Anomaly</td>
-                                    <td><span class="severity low">Low</span></td>
-                                    <td>Resolved</td>
-                                    <td>
-                                        <button class="table-btn"><i class="fas fa-eye"></i></button>
-                                        <button class="table-btn"><i class="fas fa-shield-alt"></i></button>
-                                    </td>
+                                    <td colspan="6">Loading watchlist matches...</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -412,7 +363,7 @@
                 
                 <div class="card system-status-card">
                     <div class="card-title">
-                        System Status & Resilience
+                        Model Proof Points
                         <div class="card-controls">
                             <button class="card-control-btn"><i class="fas fa-cog"></i></button>
                         </div>
@@ -421,82 +372,15 @@
                         <table class="data-table">
                             <thead>
                                 <tr>
-                                    <th>System</th>
-                                    <th>Status</th>
-                                    <th>Redundancy</th>
-                                    <th>Actions</th>
+                                    <th>Metric</th>
+                                    <th>Value</th>
+                                    <th>Why It Matters</th>
+                                    <th>Guidance</th>
                                 </tr>
                             </thead>
-                            <tbody>
+                            <tbody id="proofMetricsBody">
                                 <tr>
-                                    <td>Satellite Network</td>
-                                    <td><span class="status-badge online">Online</span></td>
-                                    <td>
-                                        <div class="redundancy-bar">
-                                            <div class="redundancy-level" style="width: 80%;"></div>
-                                        </div>
-                                        <span class="redundancy-text">24/25 Operational</span>
-                                    </td>
-                                    <td>
-                                        <button class="table-btn"><i class="fas fa-sync"></i></button>
-                                        <button class="table-btn"><i class="fas fa-cog"></i></button>
-                                    </td>
-                                </tr>
-                                <tr class="warning-row">
-                                    <td>Climate Stabilizers</td>
-                                    <td><span class="status-badge warning">Degraded</span></td>
-                                    <td>
-                                        <div class="redundancy-bar">
-                                            <div class="redundancy-level warning" style="width: 40%;"></div>
-                                        </div>
-                                        <span class="redundancy-text">2/5 Backups</span>
-                                    </td>
-                                    <td>
-                                        <button class="table-btn"><i class="fas fa-sync"></i></button>
-                                        <button class="table-btn"><i class="fas fa-cog"></i></button>
-                                    </td>
-                                </tr>
-                                <tr>
-                                    <td>Neural Network</td>
-                                    <td><span class="status-badge online">Online</span></td>
-                                    <td>
-                                        <div class="redundancy-bar">
-                                            <div class="redundancy-level" style="width: 100%;"></div>
-                                        </div>
-                                        <span class="redundancy-text">3/3 Backups</span>
-                                    </td>
-                                    <td>
-                                        <button class="table-btn"><i class="fas fa-sync"></i></button>
-                                        <button class="table-btn"><i class="fas fa-cog"></i></button>
-                                    </td>
-                                </tr>
-                                <tr>
-                                    <td>Power Grid</td>
-                                    <td><span class="status-badge online">Online</span></td>
-                                    <td>
-                                        <div class="redundancy-bar">
-                                            <div class="redundancy-level" style="width: 67%;"></div>
-                                        </div>
-                                        <span class="redundancy-text">2/3 Backups</span>
-                                    </td>
-                                    <td>
-                                        <button class="table-btn"><i class="fas fa-sync"></i></button>
-                                        <button class="table-btn"><i class="fas fa-cog"></i></button>
-                                    </td>
-                                </tr>
-                                <tr>
-                                    <td>Emergency Systems</td>
-                                    <td><span class="status-badge online">Online</span></td>
-                                    <td>
-                                        <div class="redundancy-bar">
-                                            <div class="redundancy-level" style="width: 100%;"></div>
-                                        </div>
-                                        <span class="redundancy-text">Isolated</span>
-                                    </td>
-                                    <td>
-                                        <button class="table-btn"><i class="fas fa-sync"></i></button>
-                                        <button class="table-btn"><i class="fas fa-cog"></i></button>
-                                    </td>
+                                    <td colspan="4">Loading model proof points...</td>
                                 </tr>
                             </tbody>
                         </table>

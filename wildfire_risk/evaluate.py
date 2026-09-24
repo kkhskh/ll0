@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
     average_precision_score,
     brier_score_loss,
@@ -16,6 +17,150 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
+
+
+def ranking_metrics(
+    y_true: pd.Series,
+    y_prob: pd.Series,
+    top_fracs: tuple[float, ...] = (0.01, 0.05, 0.1),
+) -> dict[str, float]:
+    y_true_np = np.asarray(y_true)
+    y_prob_np = np.asarray(y_prob)
+    metrics: dict[str, float] = {}
+    total = len(y_prob_np)
+    if total == 0:
+        return metrics
+
+    order = np.argsort(-y_prob_np)
+    ranked_truth = y_true_np[order]
+    for frac in top_fracs:
+        top_n = max(int(np.ceil(total * frac)), 1)
+        selected = ranked_truth[:top_n]
+        metrics[f"precision_top_{int(frac * 100)}pct"] = float(selected.mean()) if len(selected) else float("nan")
+        metrics[f"capture_top_{int(frac * 100)}pct"] = float(selected.sum() / max(y_true_np.sum(), 1))
+    return metrics
+
+
+def calibration_table(
+    y_true: pd.Series,
+    y_prob: pd.Series,
+    n_bins: int = 10,
+) -> list[dict[str, float]]:
+    y_true_np = np.asarray(y_true)
+    y_prob_np = np.asarray(y_prob)
+    if len(y_true_np) == 0:
+        return []
+
+    prob_true, prob_pred = calibration_curve(
+        y_true_np,
+        y_prob_np,
+        n_bins=n_bins,
+        strategy="quantile",
+    )
+    quantile_edges = np.quantile(y_prob_np, np.linspace(0.0, 1.0, len(prob_true) + 1))
+    rows: list[dict[str, float]] = []
+    for idx, (observed, predicted) in enumerate(zip(prob_true, prob_pred)):
+        rows.append(
+            {
+                "bin": float(idx + 1),
+                "predicted_mean": float(predicted),
+                "observed_rate": float(observed),
+                "bin_lower": float(quantile_edges[idx]),
+                "bin_upper": float(quantile_edges[idx + 1]),
+                "abs_gap": float(abs(predicted - observed)),
+            }
+        )
+    return rows
+
+
+def expected_calibration_error(calibration_rows: list[dict[str, float]]) -> float:
+    if not calibration_rows:
+        return float("nan")
+    return float(np.mean([row["abs_gap"] for row in calibration_rows]))
+
+
+def build_presentation_guidance(metrics: dict[str, float]) -> dict[str, Any]:
+    precision_at_threshold = metrics.get("precision_at_0_5", float("nan"))
+    brier_score = metrics.get("brier_score", float("nan"))
+    recommended_mode = "ranked_signal"
+    score_field = "relative_risk_score"
+    positioning_statement = (
+        "A working no-leak wildfire risk ranking baseline with promising discrimination, "
+        "but not yet calibrated enough for decision-grade probability claims."
+    )
+    warning = (
+        "Use this model as a ranked wildfire signal. Raw probabilities are not calibrated enough "
+        "for literal probability claims."
+    )
+
+    if np.isfinite(precision_at_threshold) and np.isfinite(brier_score):
+        if precision_at_threshold >= 0.25 and brier_score <= 0.15:
+            warning = "Probabilities are usable with caution, but ranked presentation is still preferred."
+        else:
+            recommended_mode = "ranked_signal"
+            score_field = "relative_risk_score"
+
+    return {
+        "recommended_mode": recommended_mode,
+        "recommended_score_field": score_field,
+        "positioning_statement": positioning_statement,
+        "warning": warning,
+    }
+
+
+def ranking_stability(
+    df: pd.DataFrame,
+    score_col: str = "ranking_score",
+    entity_cols: tuple[str, ...] = ("cell_id", "month_num"),
+) -> dict[str, Any]:
+    if score_col not in df.columns or "year" not in df.columns:
+        return {"pairs": [], "mean_spearman": float("nan"), "mean_top_decile_overlap": float("nan")}
+
+    pairs: list[dict[str, float | int]] = []
+    years = sorted(df["year"].dropna().unique())
+    for prev_year, curr_year in zip(years, years[1:]):
+        prev_df = df[df["year"] == prev_year][list(entity_cols) + [score_col]].rename(
+            columns={score_col: "prev_score"}
+        )
+        curr_df = df[df["year"] == curr_year][list(entity_cols) + [score_col]].rename(
+            columns={score_col: "curr_score"}
+        )
+        merged = prev_df.merge(curr_df, on=list(entity_cols), how="inner")
+        if merged.empty:
+            continue
+
+        prev_cutoff = merged["prev_score"].quantile(0.9)
+        curr_cutoff = merged["curr_score"].quantile(0.9)
+        prev_top = set(
+            zip(
+                merged.loc[merged["prev_score"] >= prev_cutoff, entity_cols[0]],
+                merged.loc[merged["prev_score"] >= prev_cutoff, entity_cols[1]],
+            )
+        )
+        curr_top = set(
+            zip(
+                merged.loc[merged["curr_score"] >= curr_cutoff, entity_cols[0]],
+                merged.loc[merged["curr_score"] >= curr_cutoff, entity_cols[1]],
+            )
+        )
+        union = prev_top | curr_top
+        overlap = len(prev_top & curr_top) / len(union) if union else float("nan")
+        pairs.append(
+            {
+                "prev_year": int(prev_year),
+                "curr_year": int(curr_year),
+                "spearman": float(merged["prev_score"].corr(merged["curr_score"], method="spearman")),
+                "top_decile_overlap": float(overlap),
+            }
+        )
+
+    if not pairs:
+        return {"pairs": [], "mean_spearman": float("nan"), "mean_top_decile_overlap": float("nan")}
+    return {
+        "pairs": pairs,
+        "mean_spearman": float(np.nanmean([pair["spearman"] for pair in pairs])),
+        "mean_top_decile_overlap": float(np.nanmean([pair["top_decile_overlap"] for pair in pairs])),
+    }
 
 
 def classification_metrics(y_true: pd.Series, y_prob: pd.Series, threshold: float = 0.5) -> dict[str, float]:
@@ -30,12 +175,15 @@ def classification_metrics(y_true: pd.Series, y_prob: pd.Series, threshold: floa
         "brier_score": float(brier_score_loss(y_true_np, y_prob_np)),
         "precision_at_0_5": float(precision_score(y_true_np, y_pred, zero_division=0)),
         "recall_at_0_5": float(recall_score(y_true_np, y_pred, zero_division=0)),
+        "positive_rate": float(np.mean(y_true_np)) if len(y_true_np) else float("nan"),
+        "mean_predicted_probability": float(np.mean(y_prob_np)) if len(y_prob_np) else float("nan"),
     }
 
     top_decile_cutoff = np.quantile(y_prob_np, 0.9)
     top_decile_pred = (y_prob_np >= top_decile_cutoff).astype(int)
     metrics["recall_top_decile"] = float(recall_score(y_true_np, top_decile_pred, zero_division=0))
     metrics["precision_top_decile"] = float(precision_score(y_true_np, top_decile_pred, zero_division=0))
+    metrics.update(ranking_metrics(y_true, y_prob))
     return metrics
 
 

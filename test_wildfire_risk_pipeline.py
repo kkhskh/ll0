@@ -7,6 +7,7 @@ import pandas as pd
 
 from wildfire_risk.build_features import build_feature_table
 from wildfire_risk.build_labels import build_label_table
+from wildfire_risk.build_predictor_table import build_predictor_table
 from wildfire_risk.grid import GridSpec, create_global_grid, create_month_index
 from wildfire_risk.render_maps import render_monthly_risk_maps
 from wildfire_risk.train_baseline import TrainConfig, select_feature_columns, train_baseline_models
@@ -44,6 +45,75 @@ class WildfireRiskPipelineTest(unittest.TestCase):
             self.assertNotIn("burned_event_count", feature_columns)
             self.assertNotIn("cell_area_km2", feature_columns)
             self.assertIn("burned_fraction_lag_1", feature_columns)
+
+    def test_dynamic_external_predictors_are_lagged_before_training(self) -> None:
+        labels = pd.DataFrame(
+            {
+                "cell_id": ["000_000", "000_000", "000_000", "000_000"],
+                "month": ["2020-01", "2020-02", "2020-03", "2020-04"],
+                "year": [2020, 2020, 2020, 2020],
+                "month_num": [1, 2, 3, 4],
+                "lat_center": [0.25, 0.25, 0.25, 0.25],
+                "lon_center": [0.25, 0.25, 0.25, 0.25],
+                "cell_area_km2": [1000.0, 1000.0, 1000.0, 1000.0],
+                "burned_area_km2": [0.0, 5.0, 15.0, 0.0],
+                "burned_fraction": [0.0, 0.005, 0.015, 0.0],
+                "binary_risk_label": [0, 1, 1, 0],
+                "burned_pixel_count": [0, 2, 6, 0],
+                "burned_event_count": [0, 1, 1, 0],
+            }
+        )
+        climate = pd.DataFrame(
+            {
+                "cell_id": ["000_000", "000_000", "000_000", "000_000"],
+                "month": ["2020-01", "2020-02", "2020-03", "2020-04"],
+                "era5_temperature_2m": [20.0, 21.0, 23.0, 22.0],
+                "era5_precipitation": [100.0, 80.0, 60.0, 70.0],
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            labels_path = tmp_path / "labels.csv"
+            climate_path = tmp_path / "climate.csv"
+            labels.to_csv(labels_path, index=False)
+            climate.to_csv(climate_path, index=False)
+
+            features = build_feature_table(
+                labels_path=labels_path,
+                output_path=tmp_path / "features.csv",
+                dynamic_sources=[(str(climate_path), "era5")],
+            )
+            self.assertNotIn("era5_temperature_2m", features.columns)
+            self.assertIn("era5_temperature_2m_lag_1", features.columns)
+            self.assertIn("era5_precipitation_rollmean_3", features.columns)
+
+    def test_build_predictor_table_from_monthly_csv(self) -> None:
+        source = pd.DataFrame(
+            {
+                "month": ["2020-01-15", "2020-01-15", "2020-02-15"],
+                "lat": [0.1, 0.3, 0.1],
+                "lon": [0.1, 0.3, 0.1],
+                "temperature_2m": [20.0, 24.0, 22.0],
+                "soil_moisture": [100.0, 80.0, 90.0],
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            source_path = tmp_path / "source.csv"
+            source.to_csv(source_path, index=False)
+
+            predictors = build_predictor_table(
+                input_path=source_path,
+                output_path=tmp_path / "predictors.csv",
+                variables=["temperature_2m", "soil_moisture"],
+                resolution_deg=0.5,
+            )
+            self.assertIn("hot_dry_factor", predictors.columns)
+            january = predictors[predictors["month"] == "2020-01"].iloc[0]
+            self.assertAlmostEqual(january["temperature_2m"], 22.0)
+            self.assertAlmostEqual(january["soil_moisture"], 90.0)
 
     def test_end_to_end_pipeline_on_synthetic_data(self) -> None:
         rng = np.random.default_rng(7)
@@ -175,9 +245,17 @@ class WildfireRiskPipelineTest(unittest.TestCase):
                 run_name=run_name,
             )
             self.assertIn("classification", results["metrics"])
+            self.assertIn("classification_raw", results["metrics"])
+            self.assertIn("presentation_guidance", results["metrics"])
+            self.assertIn("calibration", results["metrics"])
+            self.assertIn("ranking_summary", results["metrics"])
+            self.assertIn("ranking_stability", results["metrics"])
             self.assertGreaterEqual(results["metrics"]["classification"]["roc_auc"], 0.6)
             self.assertTrue((run_root / run_name / "models" / "metrics.json").exists())
             self.assertTrue((run_root / run_name / "models" / "run_config.json").exists())
+            self.assertTrue((run_root / run_name / "models" / "signal_profile.json").exists())
+            self.assertIn("raw_predicted_probability", results["validation_predictions"].columns)
+            self.assertIn("ranking_score", results["validation_predictions"].columns)
 
             rendered = render_monthly_risk_maps(
                 run_root / run_name / "models" / "validation_predictions.csv",
@@ -188,6 +266,9 @@ class WildfireRiskPipelineTest(unittest.TestCase):
             self.assertTrue(rendered)
             self.assertTrue((run_root / run_name / "maps" / "top_risk_cells.csv").exists())
             self.assertTrue((run_root / run_name / "reports" / "render-maps_manifest.json").exists())
+            top_risk = pd.read_csv(run_root / run_name / "maps" / "top_risk_cells.csv")
+            self.assertIn("relative_risk_score", top_risk.columns)
+            self.assertIn("risk_band", top_risk.columns)
 
 
 if __name__ == "__main__":

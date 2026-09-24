@@ -78,6 +78,13 @@ const mapConfig = {
 let esriMap;
 let mapView;
 let graphicsLayer;
+const apiBase = window.HEPHAELION_API_BASE || 'http://127.0.0.1:8000';
+const investorState = {
+    selectedMonth: new Date().getUTCMonth() + 1,
+    summary: null,
+    monthly: null,
+    watchlist: null
+};
 
 // Disaster types and their characteristics
 const disasterTypes = {
@@ -129,9 +136,13 @@ const dataPipeline = {
 };
 
 // Initialize the system when DOM is loaded
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     initializeCanvases();
     initializeEventListeners();
+    if (isInvestorMode()) {
+        await initializeInvestorDashboard();
+        return;
+    }
     startSystemMonitoring();
     updateSystemStatus();
     
@@ -170,12 +181,14 @@ function resizeCanvas(canvas) {
 // Initialize event listeners
 function initializeEventListeners() {
     // Simulation control buttons
-    document.querySelectorAll('.sim-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const mode = e.target.id.replace('Btn', '');
-            activateSimulationMode(mode);
+    if (!isInvestorMode()) {
+        document.querySelectorAll('.sim-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const mode = e.target.id.replace('Btn', '');
+                activateSimulationMode(mode);
+            });
         });
-    });
+    }
 
     // Alert handling
     document.getElementById('dismissAlert')?.addEventListener('click', dismissAlert);
@@ -188,6 +201,16 @@ function initializeEventListeners() {
 
     // Window resize handling
     window.addEventListener('resize', handleResize);
+
+    document.getElementById('refreshInvestorData')?.addEventListener('click', async () => {
+        await initializeInvestorDashboard(true);
+    });
+    document.getElementById('openInvestorDocs')?.addEventListener('click', () => {
+        window.open(`${apiBase}/docs`, '_blank');
+    });
+    document.getElementById('openRunSummary')?.addEventListener('click', () => {
+        window.open(`${apiBase}/api/v1/wildfire/investor/summary`, '_blank');
+    });
 }
 
 // Simulation mode activation
@@ -620,6 +643,11 @@ function clearCanvas(ctx) {
 // Handle window resize
 function handleResize() {
     initializeCanvases();
+    if (isInvestorMode()) {
+        renderInvestorCharts();
+        renderInvestorMap();
+        return;
+    }
     drawCurrentState();
     updateCharts();
 }
@@ -995,4 +1023,267 @@ function drawWildfireGraphic(location) {
     });
 
     graphicsLayer.add(graphic);
+}
+
+function isInvestorMode() {
+    return document.body?.dataset.dashboardMode === 'wildfire-investor';
+}
+
+async function fetchJson(path) {
+    const response = await fetch(`${apiBase}${path}`);
+    if (!response.ok) {
+        throw new Error(`Request failed: ${response.status}`);
+    }
+    return await response.json();
+}
+
+function configureInvestorMonthButtons() {
+    const monthButtons = [
+        { id: 'currentState', label: 'Current', month: new Date().getUTCMonth() + 1 },
+        { id: 'hurricaneBtn', label: 'Jan', month: 1 },
+        { id: 'tsunamiBtn', label: 'Apr', month: 4 },
+        { id: 'wildfireBtn', label: 'Jul', month: 7 },
+        { id: 'stormBtn', label: 'Oct', month: 10 }
+    ];
+
+    monthButtons.forEach(({ id, label, month }) => {
+        const button = document.getElementById(id);
+        if (!button) return;
+        button.innerHTML = `<i class="fas fa-fire"></i> ${label}`;
+        button.classList.toggle('active', investorState.selectedMonth === month);
+        button.onclick = async () => {
+            investorState.selectedMonth = month;
+            monthButtons.forEach(({ id: otherId, month: otherMonth }) => {
+                document.getElementById(otherId)?.classList.toggle('active', otherMonth === month);
+            });
+            await loadInvestorMonth(month);
+        };
+    });
+}
+
+async function initializeInvestorDashboard(forceRefresh = false) {
+    configureInvestorMonthButtons();
+    document.querySelector('.map-overlay')?.setAttribute('style', 'display:none;');
+    document.getElementById('tsunamiAlert')?.setAttribute('style', 'display:none;');
+
+    if (forceRefresh || !investorState.summary) {
+        investorState.summary = await fetchJson('/api/v1/wildfire/investor/summary');
+    }
+
+    renderInvestorSummary();
+    renderProofMetrics();
+    await loadInvestorMonth(investorState.selectedMonth);
+}
+
+async function loadInvestorMonth(month) {
+    investorState.monthly = await fetchJson(`/api/v1/wildfire/risk/monthly?month=${month}&limit=20`);
+    investorState.watchlist = await fetchJson(`/api/v1/wildfire/investor/watchlist?month=${month}&limit=20`);
+    renderWatchlistSignals();
+    renderInvestorCharts();
+    renderInvestorMap();
+}
+
+function renderInvestorSummary() {
+    const summary = investorState.summary;
+    if (!summary) return;
+
+    document.getElementById('activeRunValue').textContent = summary.run_name;
+    document.getElementById('globalStatusValue').textContent = (
+        summary.presentation_guidance?.recommended_mode || 'RANKED'
+    ).replaceAll('_', ' ').toUpperCase();
+    document.getElementById('guidanceBanner').textContent =
+        summary.presentation_guidance?.warning || 'Use as ranked wildfire signal.';
+    document.getElementById('runStatusBadge').textContent =
+        summary.presentation_guidance?.recommended_score_field || 'relative_risk_score';
+
+    const proof = summary.proof_points || {};
+    const snapshot = document.querySelector('.satellite-grid');
+    if (snapshot) {
+        snapshot.innerHTML = `
+            <div class="satellite-item online">
+                <div class="satellite-icon"><i class="fas fa-fire"></i></div>
+                <div class="satellite-info">
+                    <div class="satellite-name">ROC AUC</div>
+                    <div class="satellite-status">${formatMetric(proof.roc_auc)}</div>
+                </div>
+            </div>
+            <div class="satellite-item online">
+                <div class="satellite-icon"><i class="fas fa-chart-line"></i></div>
+                <div class="satellite-info">
+                    <div class="satellite-name">PR AUC</div>
+                    <div class="satellite-status">${formatMetric(proof.pr_auc)}</div>
+                </div>
+            </div>
+            <div class="satellite-item warning">
+                <div class="satellite-icon"><i class="fas fa-filter"></i></div>
+                <div class="satellite-info">
+                    <div class="satellite-name">Top 10% Precision</div>
+                    <div class="satellite-status">${formatMetric(proof.precision_top_10pct)}</div>
+                </div>
+            </div>
+            <div class="satellite-item online">
+                <div class="satellite-icon"><i class="fas fa-bullseye"></i></div>
+                <div class="satellite-info">
+                    <div class="satellite-name">Top 10% Capture</div>
+                    <div class="satellite-status">${formatMetric(proof.capture_top_10pct)}</div>
+                </div>
+            </div>
+        `;
+    }
+}
+
+function renderProofMetrics() {
+    const summary = investorState.summary;
+    const tbody = document.getElementById('proofMetricsBody');
+    if (!summary || !tbody) return;
+
+    const proof = summary.proof_points || {};
+    const guidance = summary.presentation_guidance || {};
+    const rows = [
+        ['ROC AUC', formatMetric(proof.roc_auc), 'Ranking quality across all cells.', 'Good for relative discrimination.'],
+        ['PR AUC', formatMetric(proof.pr_auc), 'More informative under class imbalance.', 'Useful for hotspot screening.'],
+        ['Top 10% Precision', formatMetric(proof.precision_top_10pct), 'How many positives appear in the top-decile signal bucket.', 'Best KPI for watchlist triage.'],
+        ['Brier Score', formatMetric(proof.brier_score), 'Calibration and probability quality.', guidance.warning || 'Do not treat raw probabilities literally yet.']
+    ];
+
+    tbody.innerHTML = rows.map(([metric, value, why, note]) => `
+        <tr>
+            <td>${metric}</td>
+            <td>${value}</td>
+            <td>${why}</td>
+            <td>${note}</td>
+        </tr>
+    `).join('');
+}
+
+function renderWatchlistSignals() {
+    const tbody = document.getElementById('watchlistSignalsBody');
+    if (!tbody) return;
+    const matches = investorState.watchlist?.watchlist_matches || [];
+    if (!matches.length) {
+        tbody.innerHTML = '<tr class="alert-row low"><td colspan="6">No watchlist names matched the selected month.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = matches.map((item) => `
+        <tr class="alert-row medium">
+            <td>${item.symbol}</td>
+            <td>${item.region}</td>
+            <td>${item.theme}</td>
+            <td><span class="severity medium">${item.risk_band || 'monitor'}</span></td>
+            <td>${formatMetric(item.relative_risk_score)}</td>
+            <td>${item.matched_cells}</td>
+        </tr>
+    `).join('');
+}
+
+function renderInvestorCharts() {
+    if (pressureChartCtx) {
+        drawBarChart(
+            pressureChartCtx,
+            (investorState.summary?.top_features || []).slice(0, 6).map(item => ({
+                label: truncateLabel(item.feature),
+                value: Number(item.importance || 0)
+            })),
+            '#ff8c42'
+        );
+    }
+
+    if (tempChartCtx) {
+        const monthly = investorState.summary?.metrics?.per_month || {};
+        const chartData = Object.keys(monthly)
+            .sort((a, b) => Number(a) - Number(b))
+            .map((month) => ({
+                label: month.padStart(2, '0'),
+                value: Number(monthly[month].precision_top_decile || 0)
+            }));
+        drawBarChart(tempChartCtx, chartData, '#5bc0eb');
+    }
+}
+
+function drawBarChart(ctx, data, color) {
+    clearCanvas(ctx);
+    if (!data || !data.length) return;
+    const width = ctx.canvas.width;
+    const height = ctx.canvas.height;
+    const maxValue = Math.max(...data.map(item => item.value), 1);
+    const barWidth = width / data.length;
+
+    ctx.fillStyle = '#93a0ba';
+    ctx.font = '11px HK Grotesk, Arial, sans-serif';
+
+    data.forEach((item, index) => {
+        const barHeight = (item.value / maxValue) * (height - 30);
+        const x = index * barWidth + 10;
+        const y = height - barHeight - 18;
+        ctx.fillStyle = color;
+        ctx.fillRect(x, y, Math.max(barWidth - 18, 8), barHeight);
+        ctx.fillStyle = '#93a0ba';
+        ctx.fillText(item.label, x, height - 4);
+    });
+}
+
+function renderInvestorMap() {
+    const topCells = investorState.monthly?.top_cells || [];
+    if (!window.esriConstructors || !graphicsLayer) {
+        if (isInvestorMode()) {
+            setTimeout(() => renderInvestorMap(), 800);
+        }
+        return;
+    }
+
+    const { Graphic, Point, SimpleMarkerSymbol } = window.esriConstructors;
+    graphicsLayer.removeAll();
+
+    topCells.forEach((cell) => {
+        const band = cell.risk_band || 'monitor';
+        const color = band === 'extreme'
+            ? [255, 92, 92, 0.8]
+            : band === 'high'
+                ? [255, 148, 77, 0.75]
+                : band === 'elevated'
+                    ? [255, 204, 102, 0.72]
+                    : [120, 176, 255, 0.65];
+
+        const point = new Point({
+            longitude: cell.lon_center,
+            latitude: cell.lat_center
+        });
+
+        const symbol = new SimpleMarkerSymbol({
+            style: 'diamond',
+            color,
+            size: `${Math.max(10, Math.round((cell.relative_risk_score || 40) / 4))}px`,
+            outline: {
+                color: [255, 255, 255, 0.9],
+                width: 1
+            }
+        });
+
+        const graphic = new Graphic({
+            geometry: point,
+            symbol,
+            attributes: {
+                type: 'wildfire-signal',
+                risk_band: band,
+                relative_risk_score: cell.relative_risk_score,
+                predicted_probability: cell.predicted_probability
+            }
+        });
+        graphicsLayer.add(graphic);
+    });
+}
+
+function formatMetric(value) {
+    if (value === undefined || value === null || Number.isNaN(Number(value))) {
+        return 'n/a';
+    }
+    const numeric = Number(value);
+    if (numeric >= 1 && numeric <= 100 && Number.isInteger(numeric)) {
+        return String(numeric);
+    }
+    return numeric.toFixed(3);
+}
+
+function truncateLabel(value) {
+    return value.length > 14 ? `${value.slice(0, 14)}…` : value;
 }

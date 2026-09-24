@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 try:
@@ -45,7 +46,10 @@ def render_monthly_risk_maps(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     climatology = (
-        df.groupby(["month_num", "lat_center", "lon_center"], as_index=False)[value_col]
+        df.groupby(
+            [column for column in ["month_num", "cell_id", "lat_center", "lon_center"] if column in df.columns],
+            as_index=False,
+        )[value_col]
         .mean()
         .sort_values(["month_num", "lat_center", "lon_center"])
     )
@@ -84,6 +88,16 @@ def render_monthly_risk_maps(
         .head(20)
         .reset_index(drop=True)
     )
+    top_risk["risk_rank"] = top_risk.groupby("month_num").cumcount() + 1
+    top_risk["relative_risk_score"] = top_risk.groupby("month_num")["risk_rank"].transform(
+        lambda rank: np.clip(100.0 * (1.0 - ((rank - 1.0) / max(len(rank), 1))), 0.0, 100.0)
+    )
+    top_risk["risk_percentile"] = top_risk["relative_risk_score"] / 100.0
+    top_risk["risk_band"] = pd.cut(
+        top_risk["risk_percentile"],
+        bins=[-0.01, 0.5, 0.8, 0.95, 1.01],
+        labels=["monitor", "elevated", "high", "extreme"],
+    ).astype(str)
     top_risk_path = output_dir / "top_risk_cells.csv"
     top_risk.to_csv(top_risk_path, index=False)
 

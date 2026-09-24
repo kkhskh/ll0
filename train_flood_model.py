@@ -3,6 +3,7 @@ Quick Training Script for Flood Detection
 Minimal setup to test the flood pipeline
 """
 
+import argparse
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -174,19 +175,37 @@ def visualize_predictions(model, dataset, device, num_samples=4, save_path=None)
     plt.show()
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train a Sen1Floods11 flood segmentation model")
+    parser.add_argument("--data-dir", default="datasets/floods/sen1floods11")
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--num-epochs", type=int, default=30)
+    parser.add_argument("--num-workers", type=int, default=2)
+    parser.add_argument("--checkpoint-dir", default="checkpoints/flood")
+    parser.add_argument("--log-dir", default="logs/flood")
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--s2-bands", nargs="*", type=int, default=[1, 2, 3, 7, 11, 12])
+    parser.add_argument("--s1-only", action="store_true", help="Use only Sentinel-1 SAR inputs")
+    parser.add_argument("--no-official-splits", action="store_true", help="Ignore official Sen1Floods11 split CSVs")
+    return parser.parse_args()
+
+
 def main():
-    # Configuration
+    args = parse_args()
     CONFIG = {
-        'data_dir': 'datasets/floods/sen1floods11',
-        'batch_size': 4,
-        'learning_rate': 1e-4,
-        'num_epochs': 30,
+        'data_dir': args.data_dir,
+        'batch_size': args.batch_size,
+        'learning_rate': args.learning_rate,
+        'num_epochs': args.num_epochs,
         'use_s1': True,
-        'use_s2': True,
-        's2_bands': [1, 2, 3, 7, 11, 12],  # B, G, R, NIR, SWIR1, SWIR2
-        'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-        'checkpoint_dir': 'checkpoints/flood',
-        'log_dir': 'logs/flood'
+        'use_s2': not args.s1_only,
+        's2_bands': args.s2_bands,
+        'device': args.device,
+        'checkpoint_dir': args.checkpoint_dir,
+        'log_dir': args.log_dir,
+        'num_workers': args.num_workers,
+        'prefer_official_splits': not args.no_official_splits,
     }
     
     print("=" * 60)
@@ -201,7 +220,10 @@ def main():
     
     # Create data splits
     print("\nCreating data splits...")
-    train_chips, val_chips, test_chips = create_data_splits(CONFIG['data_dir'])
+    train_chips, val_chips, test_chips = create_data_splits(
+        CONFIG['data_dir'],
+        prefer_official_splits=CONFIG['prefer_official_splits'],
+    )
     
     # Create datasets
     print("Creating datasets...")
@@ -230,7 +252,7 @@ def main():
         train_dataset,
         batch_size=CONFIG['batch_size'],
         shuffle=True,
-        num_workers=2,
+        num_workers=CONFIG['num_workers'],
         pin_memory=True
     )
     
@@ -238,7 +260,25 @@ def main():
         val_dataset,
         batch_size=CONFIG['batch_size'],
         shuffle=False,
-        num_workers=2,
+        num_workers=CONFIG['num_workers'],
+        pin_memory=True
+    )
+
+    test_dataset = Sen1Floods11Dataset(
+        CONFIG['data_dir'],
+        test_chips,
+        mode='test',
+        use_s1=CONFIG['use_s1'],
+        use_s2=CONFIG['use_s2'],
+        s2_bands=CONFIG['s2_bands'],
+        augment=False
+    )
+
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=CONFIG['batch_size'],
+        shuffle=False,
+        num_workers=CONFIG['num_workers'],
         pin_memory=True
     )
     
@@ -333,6 +373,28 @@ def main():
     # Save training history
     with open(Path(CONFIG['log_dir']) / 'training_history.json', 'w') as f:
         json.dump(history, f, indent=2)
+
+    best_checkpoint_path = Path(CONFIG['checkpoint_dir']) / 'best_model.pth'
+    if best_checkpoint_path.exists():
+        checkpoint = torch.load(best_checkpoint_path, map_location=CONFIG['device'])
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print("\nEvaluating best checkpoint on held-out test split...")
+        test_loss, test_metrics = validate(model, test_loader, criterion, CONFIG['device'])
+        print(f"Test Loss: {test_loss:.4f} | Test IoU: {test_metrics['iou']:.4f}")
+    else:
+        test_loss, test_metrics = float('nan'), {}
+
+    with open(Path(CONFIG['log_dir']) / 'metrics_summary.json', 'w') as f:
+        json.dump(
+            {
+                'best_val_iou': best_iou,
+                'test_loss': test_loss,
+                'test_metrics': test_metrics,
+                'config': CONFIG,
+            },
+            f,
+            indent=2,
+        )
     
     # Visualize some predictions
     print("\nGenerating visualizations...")

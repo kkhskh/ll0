@@ -45,7 +45,7 @@ def _prefixed_feature_frame(
     rename_map = {}
     for column in df.columns:
         if column not in key_columns:
-            rename_map[column] = f"{prefix}_{column}" if prefix else column
+            rename_map[column] = column if (prefix and column.startswith(f"{prefix}_")) else (f"{prefix}_{column}" if prefix else column)
     return df.rename(columns=rename_map)
 
 
@@ -81,6 +81,17 @@ def merge_static_sources(
             source_df = _prefixed_feature_frame(source_df, prefix=prefix, key_columns=("cell_id",))
             merged = merged.merge(source_df, on=["cell_id"], how="left")
     return merged
+
+
+def dynamic_feature_columns(df: pd.DataFrame, dynamic_prefixes: Iterable[str]) -> list[str]:
+    prefixes = [f"{prefix}_" for prefix in dynamic_prefixes if prefix]
+    return [
+        column
+        for column in df.columns
+        if any(column.startswith(prefix) for prefix in prefixes)
+        and column not in ID_COLUMNS
+        and np.issubdtype(df[column].dtype, np.number)
+    ]
 
 
 def add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -122,6 +133,33 @@ def add_history_features(
     return out
 
 
+def add_dynamic_source_features(
+    df: pd.DataFrame,
+    dynamic_prefixes: Iterable[str],
+    group_col: str = "cell_id",
+    rolling_windows: tuple[int, ...] = (3, 6, 12),
+) -> pd.DataFrame:
+    out = df.sort_values([group_col, "year", "month_num"]).copy()
+    grouped = out.groupby(group_col, group_keys=False)
+    source_columns = dynamic_feature_columns(out, dynamic_prefixes=dynamic_prefixes)
+    if not source_columns:
+        return out
+
+    for column in source_columns:
+        shifted = grouped[column].shift(1)
+        out[f"{column}_lag_1"] = shifted
+        for window in rolling_windows:
+            out[f"{column}_rollmean_{window}"] = (
+                shifted.groupby(out[group_col]).rolling(window=window, min_periods=1).mean().reset_index(level=0, drop=True)
+            )
+            out[f"{column}_rollmax_{window}"] = (
+                shifted.groupby(out[group_col]).rolling(window=window, min_periods=1).max().reset_index(level=0, drop=True)
+            )
+
+    # Drop contemporaneous observed values so the feature table stays usable for forward-looking inference.
+    return out.drop(columns=source_columns)
+
+
 def add_anomaly_features(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     numeric_features = [
@@ -139,8 +177,12 @@ def add_anomaly_features(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def finalize_feature_table(df: pd.DataFrame) -> pd.DataFrame:
+def finalize_feature_table(
+    df: pd.DataFrame,
+    dynamic_prefixes: Iterable[str] = (),
+) -> pd.DataFrame:
     out = add_calendar_features(df)
+    out = add_dynamic_source_features(out, dynamic_prefixes=dynamic_prefixes)
     out = add_history_features(out)
     out = add_anomaly_features(out)
 
@@ -166,7 +208,10 @@ def build_feature_table(
 
     features_df = merge_dynamic_sources(labels_df, dynamic_sources=dynamic_sources)
     features_df = merge_static_sources(features_df, static_sources=static_sources)
-    features_df = finalize_feature_table(features_df)
+    features_df = finalize_feature_table(
+        features_df,
+        dynamic_prefixes=[prefix for _, prefix in dynamic_sources],
+    )
 
     layout = None
     if run_root is not None:

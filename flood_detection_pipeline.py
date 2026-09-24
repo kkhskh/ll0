@@ -30,6 +30,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def normalize_chip_id(raw_value: str) -> str:
+    chip_id = Path(str(raw_value)).stem
+    for suffix in ("_LabelHand", "_S1Hand", "_S2Hand"):
+        if chip_id.endswith(suffix):
+            chip_id = chip_id[: -len(suffix)]
+    return chip_id
+
+
 class Sen1Floods11Dataset(Dataset):
     """
     PyTorch Dataset for Sen1Floods11 flood detection
@@ -79,6 +87,9 @@ class Sen1Floods11Dataset(Dataset):
         
         # Verify data exists
         self._verify_data()
+        self.chip_ids = self._filter_available_chip_ids(self.chip_ids)
+        if not self.chip_ids:
+            raise ValueError(f"No usable flood chips were found in {self.data_dir}")
         
         # Setup augmentations
         self.setup_augmentations()
@@ -101,6 +112,23 @@ class Sen1Floods11Dataset(Dataset):
             self.label_dir = self.data_dir / 'LabelHand'
         
         logger.info(f"Using Sen1Floods11 {self.data_version}")
+
+    def _chip_exists(self, chip_id: str) -> bool:
+        label_path = self.label_dir / f"{chip_id}_LabelHand.tif"
+        if not label_path.exists():
+            return False
+        if self.use_s1 and not (self.s1_dir / f"{chip_id}_S1Hand.tif").exists():
+            return False
+        if self.use_s2 and not (self.s2_dir / f"{chip_id}_S2Hand.tif").exists():
+            return False
+        return True
+
+    def _filter_available_chip_ids(self, chip_ids: List[str]) -> List[str]:
+        valid_chip_ids = [chip_id for chip_id in chip_ids if self._chip_exists(chip_id)]
+        dropped = len(chip_ids) - len(valid_chip_ids)
+        if dropped:
+            logger.warning("Dropped %s chip(s) with missing files for mode=%s", dropped, self.mode)
+        return valid_chip_ids
     
     def setup_augmentations(self):
         """Setup albumentations for data augmentation"""
@@ -218,8 +246,10 @@ class Sen1Floods11Dataset(Dataset):
             
         except Exception as e:
             logger.error(f"Error loading chip {chip_id}: {e}")
-            # Return a dummy sample
-            return self.__getitem__(0)
+            fallback_idx = (idx + 1) % len(self.chip_ids)
+            if fallback_idx == idx:
+                raise RuntimeError(f"Could not load flood chip {chip_id}") from e
+            return self.__getitem__(fallback_idx)
 
 
 class FloodSegmentationModel(nn.Module):
@@ -368,7 +398,8 @@ def create_data_splits(
     data_dir: str,
     val_split: float = 0.2,
     test_split: float = 0.1,
-    random_state: int = 42
+    random_state: int = 42,
+    prefer_official_splits: bool = True,
 ) -> Tuple[List[str], List[str], List[str]]:
     """
     Create train/val/test splits from Sen1Floods11 data
@@ -377,6 +408,11 @@ def create_data_splits(
         train_chips, val_chips, test_chips: Lists of chip IDs
     """
     data_path = Path(data_dir)
+    if prefer_official_splits:
+        official_splits = load_official_splits(data_path)
+        if official_splits is not None:
+            logger.info("Using official Sen1Floods11 split CSVs")
+            return official_splits
     
     # Find all label files to get chip IDs
     if (data_path / 'v1.1').exists():
@@ -412,6 +448,51 @@ def create_data_splits(
     logger.info(f"Split: Train={len(train_chips)}, Val={len(val_chips)}, Test={len(test_chips)}")
     
     return train_chips, val_chips, test_chips
+
+
+def load_official_splits(data_path: Path) -> Optional[Tuple[List[str], List[str], List[str]]]:
+    candidate_dirs = [
+        data_path / "v1.1" / "splits" / "flood_handlabeled",
+        data_path / "splits" / "flood_handlabeled",
+    ]
+    split_dir = next((path for path in candidate_dirs if path.exists()), None)
+    if split_dir is None:
+        return None
+
+    split_paths = {
+        "train": split_dir / "flood_train_data.csv",
+        "val": split_dir / "flood_valid_data.csv",
+        "test": split_dir / "flood_test_data.csv",
+    }
+    if not all(path.exists() for path in split_paths.values()):
+        return None
+
+    return (
+        _read_split_chip_ids(split_paths["train"]),
+        _read_split_chip_ids(split_paths["val"]),
+        _read_split_chip_ids(split_paths["test"]),
+    )
+
+
+def _read_split_chip_ids(csv_path: Path) -> List[str]:
+    df = pd.read_csv(csv_path)
+    preferred_columns = [
+        "chip_id",
+        "image",
+        "label",
+        "s1_image",
+        "s2_image",
+        "filename",
+    ]
+    column = next((candidate for candidate in preferred_columns if candidate in df.columns), None)
+    if column is None:
+        object_columns = [name for name in df.columns if df[name].dtype == object]
+        if not object_columns:
+            column = df.columns[0]
+        else:
+            column = object_columns[0]
+    chip_ids = [normalize_chip_id(value) for value in df[column].dropna().astype(str)]
+    return sorted(set(chip_ids))
 
 
 # Training configuration

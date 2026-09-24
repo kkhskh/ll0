@@ -93,6 +93,12 @@ Once data is downloaded:
 python train_flood_model.py
 ```
 
+The trainer will now:
+- use the official Sen1Floods11 split CSVs when available
+- save the best checkpoint to `checkpoints/flood/best_model.pth`
+- evaluate that best checkpoint on the held-out test split
+- write a metrics summary to `logs/flood/metrics_summary.json`
+
 ### Training Configuration:
 - **Input**: Sentinel-1 (2 bands) + Sentinel-2 (6 bands) = 8 channels
 - **Output**: Binary flood mask (512x512)
@@ -120,6 +126,24 @@ drive.mount('/content/drive')
 # Then download dataset directly in Colab:
 !gsutil -m rsync -r gs://sen1floods11 /content/floods_data
 ```
+
+---
+
+## Step 7: Evaluate a Trained Flood Checkpoint
+
+After training finishes, or if you already have a `.pth` checkpoint:
+
+```bash
+python evaluate_flood_model.py \
+  --data-dir datasets/floods/sen1floods11 \
+  --checkpoint checkpoints/flood/best_model.pth \
+  --split test
+```
+
+This will:
+- compute loss and segmentation metrics on the selected split
+- save `evaluation_summary.json`
+- save sample prediction visualizations
 
 ---
 
