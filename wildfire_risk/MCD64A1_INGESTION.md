@@ -23,7 +23,7 @@ The current implementation aggregates burned pixels into the coarse global grid 
 
 ```bash
 python wildfire_risk/build_labels.py \
-  --input "/Users/shkh/Downloads/MCD64A1_061-20260417_045030" \
+  --input "datasets/wildfires/mcd64a1" \
   --input-format mcd64a1-hdf \
   --output "artifacts/mcd64a1_labels_2020_2025.csv" \
   --start-month 2020-01 \

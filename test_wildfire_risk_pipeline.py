@@ -4,10 +4,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from wildfire_risk.build_features import build_feature_table
 from wildfire_risk.build_labels import build_label_table
 from wildfire_risk.build_predictor_table import build_predictor_table
+from wildfire_risk.download_external import firms_date_windows, modis_tiles_for_bbox
 from wildfire_risk.grid import GridSpec, create_global_grid, create_month_index
 from wildfire_risk.render_maps import render_monthly_risk_maps
 from wildfire_risk.train_baseline import TrainConfig, select_feature_columns, train_baseline_models
@@ -114,6 +116,104 @@ class WildfireRiskPipelineTest(unittest.TestCase):
             january = predictors[predictors["month"] == "2020-01"].iloc[0]
             self.assertAlmostEqual(january["temperature_2m"], 22.0)
             self.assertAlmostEqual(january["soil_moisture"], 90.0)
+
+    def test_era5_land_netcdf_applies_product_conventions(self) -> None:
+        xr = pytest.importorskip("xarray")
+
+        # ERA5-Land ships a 0 to 360 longitude axis, so 300 degrees east is 60 degrees west.
+        latitudes = np.array([10.0, 10.1, 10.2])
+        longitudes = np.array([300.0, 300.1, 300.2])
+        times = pd.to_datetime(["2020-01-01", "2020-02-01"])
+        shape = (len(times), len(latitudes), len(longitudes))
+
+        def plane(value: float) -> np.ndarray:
+            return np.full(shape, value, dtype="float32")
+
+        dataset = xr.Dataset(
+            {
+                "t2m": (("valid_time", "latitude", "longitude"), plane(300.0)),
+                "tp": (("valid_time", "latitude", "longitude"), plane(0.004)),
+                "swvl1": (("valid_time", "latitude", "longitude"), plane(0.2)),
+                "pev": (("valid_time", "latitude", "longitude"), plane(-0.006)),
+                "u10": (("valid_time", "latitude", "longitude"), plane(3.0)),
+                "v10": (("valid_time", "latitude", "longitude"), plane(4.0)),
+            },
+            coords={"valid_time": times, "latitude": latitudes, "longitude": longitudes},
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            source_path = tmp_path / "era5_land.nc"
+            dataset.to_netcdf(source_path)
+
+            predictors = build_predictor_table(
+                input_path=source_path,
+                output_path=tmp_path / "era5_predictors.csv",
+                input_format="era5-land-netcdf",
+                variables=["t2m", "tp", "swvl1", "pev", "u10", "v10"],
+                resolution_deg=0.5,
+            )
+
+            self.assertEqual(sorted(predictors["month"].unique()), ["2020-01", "2020-02"])
+            # lat 10.0 -> index 200, lon -60.0 -> index 240 on the half-degree global grid.
+            self.assertEqual(predictors["cell_id"].unique().tolist(), ["200_240"])
+
+            january = predictors[predictors["month"] == "2020-01"].iloc[0]
+            self.assertAlmostEqual(january["temperature_2m"], 300.0, places=3)
+            self.assertAlmostEqual(january["precipitation"], 4.0, places=3)
+            # Downward-flux evaporation is flipped so larger values mean more drying.
+            self.assertAlmostEqual(january["potential_evaporation"], 6.0, places=3)
+            self.assertAlmostEqual(january["wind_speed"], 5.0, places=3)
+            self.assertAlmostEqual(january["climate_water_balance"], -2.0, places=3)
+
+    def test_era5_land_month_filter_rejects_empty_ranges(self) -> None:
+        xr = pytest.importorskip("xarray")
+
+        dataset = xr.Dataset(
+            {"t2m": (("valid_time", "latitude", "longitude"), np.full((1, 2, 2), 290.0, dtype="float32"))},
+            coords={
+                "valid_time": pd.to_datetime(["2020-01-01"]),
+                "latitude": np.array([10.0, 10.1]),
+                "longitude": np.array([20.0, 20.1]),
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source_path = Path(tmp_dir) / "era5_land.nc"
+            dataset.to_netcdf(source_path)
+
+            with self.assertRaises(ValueError):
+                build_predictor_table(
+                    input_path=source_path,
+                    output_path=Path(tmp_dir) / "out.csv",
+                    input_format="era5-land-netcdf",
+                    start_month="2021-01",
+                    end_month="2021-12",
+                )
+
+    def test_modis_tiles_for_bbox_matches_sinusoidal_layout(self) -> None:
+        # California sits on the h08v04/h08v05 tile boundary in the MODIS sine grid.
+        california = modis_tiles_for_bbox("-125,32,-114,42")
+        self.assertIn("h08v04", california)
+        self.assertIn("h08v05", california)
+        self.assertLessEqual(len(california), 8)
+
+        # A single equatorial degree must not fan out across many tiles. Longitude 0 is the
+        # exact seam between h17 and h18, so landing on both of those is correct.
+        equator = modis_tiles_for_bbox("0,0,1,1")
+        self.assertIn("h18v08", equator)
+        self.assertLessEqual(len(equator), 2)
+
+        with self.assertRaises(ValueError):
+            modis_tiles_for_bbox("10,0,-10,5")
+
+    def test_firms_windows_tile_the_requested_period_without_gaps(self) -> None:
+        windows = list(firms_date_windows("2020-01", "2020-02"))
+        self.assertEqual(windows[0][0].isoformat(), "2020-01-01")
+        self.assertEqual(sum(day_count for _, day_count in windows), 60)
+        for (start, day_count), (next_start, _) in zip(windows, windows[1:]):
+            self.assertEqual((next_start - start).days, day_count)
+        self.assertTrue(all(1 <= day_count <= 5 for _, day_count in windows))
 
     def test_end_to_end_pipeline_on_synthetic_data(self) -> None:
         rng = np.random.default_rng(7)

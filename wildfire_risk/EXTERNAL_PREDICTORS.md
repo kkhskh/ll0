@@ -30,33 +30,66 @@ It outputs:
 - mean-aggregated predictor values
 - optional derived wildfire features such as `hot_dry_factor`
 
-## ERA5 Example
+## Input Formats
 
-If your NetCDF contains coordinates like `time`, `latitude`, `longitude` and variables like `t2m`, `tp`, `swvl1`, `pev`, run:
+`--input-format` selects how the source file is read:
+
+- `tabular` loads the whole file into memory. Use it for small CSV or NetCDF extracts.
+- `era5-land-netcdf` streams a global ERA5-Land monthly-means file one timestep at a time.
+- `auto` (the default) behaves like `tabular`.
+
+A global ERA5-Land file holds `72 x 1801 x 3600`, or roughly `467` million, cell-months per variable.
+That does not fit in memory as a dataframe, so `era5-land-netcdf` reduces each timestep with
+`bincount` and never materialises the full grid.
+
+## ERA5-Land Example
+
+This is the exact command used to build the predictor table that is currently on disk:
 
 ```bash
 python wildfire_risk/build_predictor_table.py \
-  --input "/content/drive/MyDrive/Hephaelion/era5_monthly.nc" \
-  --variable t2m \
-  --variable tp \
-  --variable swvl1 \
-  --variable pev \
-  --rename t2m:temperature_2m \
-  --rename tp:precipitation \
-  --rename swvl1:soil_moisture \
-  --rename pev:potential_evaporation \
-  --run-root "/content/drive/MyDrive/Hephaelion/runs" \
-  --run-name "wildfire-risk-mvp-2020-2025-noleak-v3" \
-  --output-name "era5_predictors.csv"
+  --input datasets/wildfires/era5_land/b09a78a9a0989d1946e3597dbfbc11ca.nc \
+  --input-format era5-land-netcdf \
+  --variable t2m --variable tp --variable swvl1 \
+  --variable pev --variable u10 --variable v10 \
+  --resolution-deg 0.5 \
+  --output datasets/wildfires/era5_land/era5_land_predictors_2020_2025.csv
 ```
+
+It produced `6,793,560` rows covering `94,355` land cells across `2020-01` to `2025-12`, with columns
+`temperature_2m`, `precipitation`, `soil_moisture`, `potential_evaporation`, `wind_u10`, `wind_v10`,
+`wind_speed`, `hot_dry_factor`, and `climate_water_balance`.
+
+### Conventions the ERA5-Land path applies for you
+
+ERA5-Land does not arrive in modelling-ready form, so this path normalises three things:
+
+- **Longitude.** CDS delivers a `0` to `360` axis; the wildfire grid spans `-180` to `180`.
+- **Accumulation units.** `tp` and `pev` arrive in metres per day and become millimetres per day.
+- **Evaporation sign.** `pev` uses a downward-flux convention where evaporation is negative. It is
+  flipped so that a larger `potential_evaporation` means more atmospheric drying, which makes
+  `climate_water_balance = precipitation - potential_evaporation` read correctly as a deficit.
+
+Variables are also renamed from the short ERA5 names to the predictor names in `data_sources.py`.
+Pass `--rename` to override any of them.
+
+### Caveats worth knowing
+
+- `temperature_2m` stays in kelvin. `hot_dry_factor` divides it by soil moisture, so a conversion to
+  celsius would make that ratio unstable near `0 C`.
+- `wind_speed` is the magnitude of the monthly *mean* wind vector, not the mean of hourly wind
+  speeds. It is biased low wherever wind direction varies through the month. Treat it as a prevailing
+  wind indicator rather than a gust or fire-weather wind.
+- ERA5-Land `pev` assumes no moisture stress, so it runs high in arid regions. That is a known
+  product characteristic, not an ingestion bug; the land-mean works out to about `1590 mm/year`.
 
 Then feed the result into feature building:
 
 ```bash
 python wildfire_risk/build_features.py \
-  --labels "/content/drive/MyDrive/Hephaelion/labels_full_2020_2025.csv" \
-  --dynamic-source "/content/drive/MyDrive/Hephaelion/runs/wildfire-risk-mvp-2020-2025-noleak-v3/features/era5_predictors.csv:era5" \
-  --run-root "/content/drive/MyDrive/Hephaelion/runs" \
+  --labels "artifacts/wildfire_risk_runs/labels_full_2020_2025.csv" \
+  --dynamic-source "datasets/wildfires/era5_land/era5_land_predictors_2020_2025.csv:era5" \
+  --run-root "artifacts/wildfire_risk_runs" \
   --run-name "wildfire-risk-mvp-2020-2025-noleak-v3"
 ```
 
@@ -110,6 +143,25 @@ python wildfire_risk/build_features.py \
   --run-root "/content/drive/MyDrive/Hephaelion/runs" \
   --run-name "wildfire-risk-mvp-2020-2025-noleak-v3"
 ```
+
+## Getting The Raw Sources
+
+`download_external.py` fetches the sources that are not on disk yet. It needs Earthdata Login
+credentials, and FIRMS additionally needs a map key. See `DATA_SOURCES.md` for setup, then:
+
+```bash
+python wildfire_risk/download_external.py check-credentials
+python wildfire_risk/download_external.py list
+
+python wildfire_risk/download_external.py gpw --years 2020 --resolution 2pt5_min
+python wildfire_risk/download_external.py groads --region global
+python wildfire_risk/download_external.py mcd12q1 --start-year 2020 --end-year 2024
+python wildfire_risk/download_external.py nasadem --bbox -125,32,-114,42
+python wildfire_risk/download_external.py firms --start-month 2020-01 --end-month 2025-12
+```
+
+Downloads resume and skip files that are already complete, so re-running after an interruption only
+fetches what is missing.
 
 ## Important Modeling Note
 
