@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 from typing import Iterable
 
 import numpy as np
 import pandas as pd
+
+LOGGER = logging.getLogger(__name__)
 
 try:
     from .run_artifacts import create_run_layout, write_stage_manifest
@@ -29,11 +32,22 @@ ID_COLUMNS = {
 }
 
 
+def downcast_floats(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    float_cols = out.select_dtypes(include=["float64"]).columns
+    if len(float_cols):
+        out[float_cols] = out[float_cols].astype("float32")
+    return out
+
+
 def read_table(path: str | Path) -> pd.DataFrame:
     path = Path(path)
+    LOGGER.info("Reading %s", path)
     df = pd.read_csv(path)
     if "month" in df.columns:
         df["month"] = pd.to_datetime(df["month"]).dt.to_period("M").astype(str)
+    df = downcast_floats(df)
+    LOGGER.info("Loaded %s rows x %s cols from %s", f"{len(df):,}", df.shape[1], path.name)
     return df
 
 
@@ -49,18 +63,52 @@ def _prefixed_feature_frame(
     return df.rename(columns=rename_map)
 
 
+def filter_labels_to_dynamic_cells(
+    labels_df: pd.DataFrame,
+    dynamic_sources: Iterable[tuple[str, str]],
+) -> pd.DataFrame:
+    """Keep only grid cells that appear in at least one dynamic source.
+
+    The full 0.5 degree label table includes ocean. ERA5-Land does not. Training on
+    those empty water cells triples RAM without adding fire signal.
+    """
+    dynamic_sources = list(dynamic_sources)
+    if not dynamic_sources:
+        return labels_df
+
+    land_cells: set[str] = set()
+    for path, _prefix in dynamic_sources:
+        cells = pd.read_csv(path, usecols=["cell_id"])["cell_id"].astype(str)
+        land_cells.update(cells.unique().tolist())
+        LOGGER.info("Dynamic source %s covers %s cells", path, f"{cells.nunique():,}")
+
+    before = len(labels_df)
+    out = labels_df[labels_df["cell_id"].astype(str).isin(land_cells)].copy()
+    LOGGER.info(
+        "Restricted labels from %s to %s rows (%s land cells)",
+        f"{before:,}",
+        f"{len(out):,}",
+        f"{out['cell_id'].nunique():,}",
+    )
+    if out.empty:
+        raise ValueError("No label rows remain after restricting to dynamic-source cells")
+    return out
+
+
 def merge_dynamic_sources(
     base_df: pd.DataFrame,
     dynamic_sources: Iterable[tuple[str, str]],
 ) -> pd.DataFrame:
-    merged = base_df.copy()
+    merged = base_df
     for path, prefix in dynamic_sources:
         source_df = read_table(path)
         missing = {"cell_id", "month"} - set(source_df.columns)
         if missing:
             raise ValueError(f"Dynamic source {path} is missing required columns: {sorted(missing)}")
         source_df = _prefixed_feature_frame(source_df, prefix=prefix, key_columns=("cell_id", "month"))
+        LOGGER.info("Merging %s onto labels", path)
         merged = merged.merge(source_df, on=["cell_id", "month"], how="left")
+        LOGGER.info("Merged shape %s x %s", f"{len(merged):,}", merged.shape[1])
     return merged
 
 
@@ -181,13 +229,19 @@ def finalize_feature_table(
     df: pd.DataFrame,
     dynamic_prefixes: Iterable[str] = (),
 ) -> pd.DataFrame:
+    LOGGER.info("Adding calendar features")
     out = add_calendar_features(df)
+    LOGGER.info("Adding lagged dynamic predictors")
     out = add_dynamic_source_features(out, dynamic_prefixes=dynamic_prefixes)
+    LOGGER.info("Adding burn-history features")
     out = add_history_features(out)
+    LOGGER.info("Adding month-anomaly features")
     out = add_anomaly_features(out)
 
     numeric_cols = out.select_dtypes(include=[np.number]).columns
     out[numeric_cols] = out[numeric_cols].fillna(0.0)
+    out = downcast_floats(out)
+    LOGGER.info("Finalizing %s rows x %s cols", f"{len(out):,}", out.shape[1])
     return out.sort_values(["month", "cell_id"]).reset_index(drop=True)
 
 
@@ -199,12 +253,18 @@ def build_feature_table(
     run_root: str | Path | None = None,
     run_name: str | None = None,
     output_name: str = "feature_table.csv",
+    restrict_to_dynamic_cells: bool = True,
 ) -> pd.DataFrame:
     labels_df = read_table(labels_path)
     required = {"cell_id", "month", "year", "month_num", "binary_risk_label", "burned_fraction"}
     missing = required - set(labels_df.columns)
     if missing:
         raise ValueError(f"Label table is missing required columns: {sorted(missing)}")
+
+    dynamic_sources = list(dynamic_sources)
+    static_sources = list(static_sources)
+    if restrict_to_dynamic_cells and dynamic_sources:
+        labels_df = filter_labels_to_dynamic_cells(labels_df, dynamic_sources=dynamic_sources)
 
     features_df = merge_dynamic_sources(labels_df, dynamic_sources=dynamic_sources)
     features_df = merge_static_sources(features_df, static_sources=static_sources)
@@ -222,6 +282,7 @@ def build_feature_table(
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    LOGGER.info("Writing %s", output_path)
     features_df.to_csv(output_path, index=False)
 
     if layout is not None:
@@ -233,6 +294,7 @@ def build_feature_table(
                 "dynamic_sources": [[str(path), prefix] for path, prefix in dynamic_sources],
                 "static_sources": [[str(path), prefix] for path, prefix in static_sources],
                 "output_name": output_name,
+                "restrict_to_dynamic_cells": restrict_to_dynamic_cells,
             },
             artifacts={"feature_table": str(output_path)},
             summary={"row_count": int(len(features_df)), "column_count": int(features_df.shape[1])},
@@ -276,7 +338,13 @@ def main() -> None:
         default="feature_table.csv",
         help="Feature filename when using --run-root",
     )
+    parser.add_argument(
+        "--keep-all-cells",
+        action="store_true",
+        help="Keep ocean/empty cells that are missing from dynamic sources. Uses much more RAM.",
+    )
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
     features = build_feature_table(
         labels_path=args.labels,
@@ -286,6 +354,7 @@ def main() -> None:
         run_root=args.run_root,
         run_name=args.run_name,
         output_name=args.output_name,
+        restrict_to_dynamic_cells=not args.keep_all_cells,
     )
     print(f"Built feature table with {len(features):,} rows and {features.shape[1]} columns")
 
