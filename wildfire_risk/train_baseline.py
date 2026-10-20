@@ -3,10 +3,13 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import logging
 import pickle
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+LOGGER = logging.getLogger(__name__)
 
 import numpy as np
 import pandas as pd
@@ -63,6 +66,8 @@ class TrainConfig:
     valid_start_year: int = 2021
     valid_end_year: int = 2024
     random_state: int = 42
+    n_estimators: int = 100
+    skip_yearly_backtest: bool = False
 
 
 def read_feature_table(path: str | Path) -> pd.DataFrame:
@@ -98,17 +103,20 @@ def make_model_pair(config: TrainConfig) -> tuple[str, Any, Any]:
         return (
             "lightgbm",
             LGBMClassifier(
-                n_estimators=300,
+                n_estimators=config.n_estimators,
                 learning_rate=0.05,
                 max_depth=-1,
                 random_state=config.random_state,
-                class_weight="balanced",
+                n_jobs=4,
+                verbose=20,
             ),
             LGBMRegressor(
-                n_estimators=300,
+                n_estimators=config.n_estimators,
                 learning_rate=0.05,
                 max_depth=-1,
                 random_state=config.random_state,
+                n_jobs=4,
+                verbose=20,
             ),
         )
 
@@ -118,21 +126,23 @@ def make_model_pair(config: TrainConfig) -> tuple[str, Any, Any]:
         return (
             "xgboost",
             XGBClassifier(
-                n_estimators=300,
+                n_estimators=config.n_estimators,
                 learning_rate=0.05,
                 max_depth=8,
                 subsample=0.9,
                 colsample_bytree=0.9,
                 random_state=config.random_state,
                 eval_metric="logloss",
+                verbosity=1,
             ),
             XGBRegressor(
-                n_estimators=300,
+                n_estimators=config.n_estimators,
                 learning_rate=0.05,
                 max_depth=8,
                 subsample=0.9,
                 colsample_bytree=0.9,
                 random_state=config.random_state,
+                verbosity=1,
             ),
         )
 
@@ -141,14 +151,16 @@ def make_model_pair(config: TrainConfig) -> tuple[str, Any, Any]:
         HistGradientBoostingClassifier(
             max_depth=8,
             learning_rate=0.05,
-            max_iter=300,
+            max_iter=config.n_estimators,
             random_state=config.random_state,
+            verbose=1,
         ),
         HistGradientBoostingRegressor(
             max_depth=8,
             learning_rate=0.05,
-            max_iter=300,
+            max_iter=config.n_estimators,
             random_state=config.random_state,
+            verbose=1,
         ),
     )
 
@@ -166,16 +178,20 @@ def make_balanced_sample_weight(y: pd.Series) -> np.ndarray:
 
 
 def fit_classifier(model: Any, X: pd.DataFrame, y: pd.Series) -> Any:
+    LOGGER.info("Fitting classifier on %s rows x %s features", f"{len(X):,}", X.shape[1])
     sample_weight = make_balanced_sample_weight(y)
     try:
         model.fit(X, y, sample_weight=sample_weight)
     except TypeError:
         model.fit(X, y)
+    LOGGER.info("Finished classifier fit")
     return model
 
 
 def fit_regressor(model: Any, X: pd.DataFrame, y: pd.Series) -> Any:
+    LOGGER.info("Fitting regressor on %s rows x %s features", f"{len(X):,}", X.shape[1])
     model.fit(X, y)
+    LOGGER.info("Finished regressor fit")
     return model
 
 
@@ -282,12 +298,14 @@ def yearly_backtest(
     config: TrainConfig,
 ) -> dict[str, dict[str, float]]:
     yearly_scores: dict[str, dict[str, float]] = {}
+    LOGGER.info("Starting yearly backtest %s to %s", config.valid_start_year, config.valid_end_year)
     for year in range(config.valid_start_year, config.valid_end_year + 1):
         train_df = df[df["year"] < year].copy()
         test_df = df[df["year"] == year].copy()
         if train_df.empty or test_df.empty:
             continue
 
+        LOGGER.info("Yearly backtest %s: train %s rows, test %s rows", year, f"{len(train_df):,}", f"{len(test_df):,}")
         _, classifier, _ = make_model_pair(config)
         classifier = fit_classifier(classifier, train_df[feature_columns], train_df["binary_risk_label"])
         y_prob = classifier.predict_proba(test_df[feature_columns])[:, 1]
@@ -316,9 +334,20 @@ def train_baseline_models(
     run_root: str | Path | None = None,
     run_name: str | None = None,
 ) -> dict[str, Any]:
+    LOGGER.info("Reading feature table %s", feature_table_path)
     df = read_feature_table(feature_table_path)
+    LOGGER.info("Loaded %s rows x %s cols", f"{len(df):,}", df.shape[1])
     feature_columns = select_feature_columns(df)
     train_df, valid_df = temporal_split(df, config=config)
+    LOGGER.info(
+        "Split train %s rows (%s-%s) / valid %s rows (%s-%s)",
+        f"{len(train_df):,}",
+        int(train_df["year"].min()),
+        int(train_df["year"].max()),
+        f"{len(valid_df):,}",
+        int(valid_df["year"].min()),
+        int(valid_df["year"].max()),
+    )
     fitted = fit_models(train_df, valid_df, feature_columns, config=config)
 
     valid_predictions = fitted["valid_predictions"]
@@ -356,7 +385,11 @@ def train_baseline_models(
             "bins": calibration,
         },
         "presentation_guidance": build_presentation_guidance(classification),
-        "per_year_backtest": yearly_backtest(df, feature_columns, config=config),
+        "per_year_backtest": (
+            {}
+            if config.skip_yearly_backtest
+            else yearly_backtest(df, feature_columns, config=config)
+        ),
         "per_month": grouped_classification_metrics(valid_predictions, group_col="month_num"),
         "top_features": summarize_feature_importance(fitted["classifier"], feature_columns),
         "ranking_summary": {
@@ -419,7 +452,9 @@ def train_baseline_models(
     )
     validation_predictions_path = model_dir / "validation_predictions.csv"
     metrics_path = save_metrics(metrics, model_dir / "metrics.json")
+    LOGGER.info("Writing validation predictions %s", validation_predictions_path)
     valid_predictions.to_csv(validation_predictions_path, index=False)
+    LOGGER.info("Training complete")
 
     if layout is not None:
         write_stage_manifest(
@@ -467,7 +502,14 @@ def main() -> None:
     parser.add_argument("--valid-end-year", type=int, default=2024)
     parser.add_argument("--run-root", help="Optional root directory for a Colab-friendly run layout")
     parser.add_argument("--run-name", help="Optional run folder name inside --run-root")
+    parser.add_argument("--n-estimators", type=int, default=100)
+    parser.add_argument(
+        "--skip-yearly-backtest",
+        action="store_true",
+        help="Skip refitting a new model for every validation year. Those extra fits are what Colab kills.",
+    )
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
     results = train_baseline_models(
         feature_table_path=args.features,
@@ -476,6 +518,8 @@ def main() -> None:
             train_end_year=args.train_end_year,
             valid_start_year=args.valid_start_year,
             valid_end_year=args.valid_end_year,
+            n_estimators=args.n_estimators,
+            skip_yearly_backtest=args.skip_yearly_backtest,
         ),
         run_root=args.run_root,
         run_name=args.run_name,
