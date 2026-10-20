@@ -11,6 +11,7 @@ from wildfire_risk.build_labels import build_label_table
 from wildfire_risk.build_predictor_table import build_predictor_table
 from wildfire_risk.download_external import firms_date_windows, modis_tiles_for_bbox
 from wildfire_risk.grid import GridSpec, create_global_grid, create_month_index
+from wildfire_risk.evaluate import assign_continent, score_continents
 from wildfire_risk.render_maps import render_monthly_risk_maps
 from wildfire_risk.train_baseline import (
     TrainConfig,
@@ -462,6 +463,44 @@ class WildfireRiskPipelineTest(unittest.TestCase):
             self.assertTrue((tmp_path / "models" / "ablation" / "history" / "metrics.json").exists())
             self.assertFalse((tmp_path / "models" / "ablation" / "history" / "validation_predictions.csv").exists())
             self.assertFalse((tmp_path / "models" / "classifier.pkl").exists())
+
+    def test_continent_boxes_label_known_fire_regions(self) -> None:
+        points = pd.DataFrame(
+            {
+                "name": [
+                    "lagos",
+                    "chicago",
+                    "sao_paulo",
+                    "sydney",
+                    "paris",
+                    "beijing",
+                    "jakarta",
+                ],
+                "lat_center": [6.5, 41.9, -23.5, -33.9, 48.9, 39.9, -6.2],
+                "lon_center": [3.4, -87.6, -46.6, 151.2, 2.3, 116.4, 106.8],
+            }
+        )
+        labels = assign_continent(points["lat_center"], points["lon_center"])
+        self.assertEqual(
+            list(labels),
+            ["africa", "north_america", "south_america", "australia", "europe", "asia", "asia"],
+        )
+
+        scored = pd.DataFrame(
+            {
+                "lat_center": [6.5, 6.5, 41.9, 41.9],
+                "lon_center": [3.4, 3.4, -87.6, -87.6],
+                "binary_risk_label": [1, 0, 0, 1],
+                "ranking_score": [0.9, 0.1, 0.2, 0.8],
+                "predicted_probability": [0.4, 0.02, 0.03, 0.3],
+            }
+        )
+        rows = {row["region"]: row for row in score_continents(scored)}
+        self.assertIn("global", rows)
+        self.assertIn("africa", rows)
+        self.assertIn("north_america", rows)
+        self.assertEqual(rows["africa"]["n_fires"], 1)
+        self.assertEqual(rows["north_america"]["n_fires"], 1)
 
     def test_isotonic_calibrator_is_monotonic_and_bounded(self) -> None:
         raw = np.array([0.05, 0.10, 0.20, 0.80, 0.90, 0.95])
