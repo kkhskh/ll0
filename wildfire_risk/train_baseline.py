@@ -59,6 +59,22 @@ NON_FEATURE_COLUMNS = {
     "burned_event_count",
 }
 
+CALENDAR_PREFIXES = ("month_sin", "month_cos", "time_index")
+HISTORY_PREFIXES = ("burned_fraction_", "binary_risk_label_")
+DEFAULT_DYNAMIC_PREFIXES = ("era5",)
+ABLATION_ARMS = ("history", "era5", "both")
+ABLATION_COMPARISON_FIELDS = (
+    "roc_auc",
+    "pr_auc",
+    "brier_score",
+    "precision_at_0_5",
+    "recall_at_0_5",
+    "precision_top_1pct",
+    "precision_top_5pct",
+    "precision_top_10pct",
+    "capture_top_10pct",
+)
+
 
 @dataclass(frozen=True)
 class TrainConfig:
@@ -68,6 +84,9 @@ class TrainConfig:
     random_state: int = 42
     n_estimators: int = 100
     skip_yearly_backtest: bool = False
+    skip_regressor: bool = False
+    feature_set: str = "both"
+    dynamic_prefixes: tuple[str, ...] = DEFAULT_DYNAMIC_PREFIXES
 
 
 def read_feature_table(path: str | Path) -> pd.DataFrame:
@@ -77,15 +96,42 @@ def read_feature_table(path: str | Path) -> pd.DataFrame:
     return df
 
 
-def select_feature_columns(df: pd.DataFrame) -> list[str]:
-    feature_columns = [
+def feature_family(column: str, dynamic_prefixes: tuple[str, ...] = DEFAULT_DYNAMIC_PREFIXES) -> str:
+    if column.startswith(CALENDAR_PREFIXES):
+        return "calendar"
+    if column.startswith(HISTORY_PREFIXES):
+        return "history"
+    for prefix in dynamic_prefixes:
+        if column.startswith(f"{prefix}_"):
+            return "era5"
+    return "other"
+
+
+def select_feature_columns(
+    df: pd.DataFrame,
+    feature_set: str = "both",
+    dynamic_prefixes: tuple[str, ...] = DEFAULT_DYNAMIC_PREFIXES,
+) -> list[str]:
+    numeric_columns = [
         column
         for column in df.columns
         if column not in NON_FEATURE_COLUMNS and np.issubdtype(df[column].dtype, np.number)
     ]
-    if not feature_columns:
+    if not numeric_columns:
         raise ValueError("No numeric feature columns found in the feature table")
-    return feature_columns
+    if feature_set == "both":
+        return numeric_columns
+    if feature_set not in ("history", "era5"):
+        raise ValueError(f"Unknown feature_set {feature_set!r}. Use history, era5, or both.")
+
+    allowed = {"calendar", feature_set}
+    selected = [column for column in numeric_columns if feature_family(column, dynamic_prefixes) in allowed]
+    if not any(feature_family(column, dynamic_prefixes) == feature_set for column in selected):
+        raise ValueError(
+            f"No {feature_set} features found. History columns start with burned_fraction_; "
+            "ERA5 columns start with era5_."
+        )
+    return selected
 
 
 def temporal_split(df: pd.DataFrame, config: TrainConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -254,7 +300,11 @@ def fit_models(
     model_family, classifier, regressor = make_model_pair(config)
     model_train_df, calibration_df = split_model_and_calibration_data(train_df)
     classifier = fit_classifier(classifier, model_train_df[feature_columns], model_train_df["binary_risk_label"])
-    regressor = fit_regressor(regressor, train_df[feature_columns], train_df["burned_fraction"])
+    if config.skip_regressor:
+        LOGGER.info("Skipping burned-fraction regressor")
+        regressor = None
+    else:
+        regressor = fit_regressor(regressor, train_df[feature_columns], train_df["burned_fraction"])
 
     calibrator = None
     calibration_details = {"method": "identity", "reason": "no calibration performed"}
@@ -272,11 +322,14 @@ def fit_models(
         valid_predictions["raw_predicted_probability"].to_numpy(),
     )
     valid_predictions["ranking_score"] = valid_predictions["raw_predicted_probability"]
-    valid_predictions["predicted_burned_fraction"] = np.clip(
-        regressor.predict(valid_df[feature_columns]),
-        0.0,
-        1.0,
-    )
+    if regressor is None:
+        valid_predictions["predicted_burned_fraction"] = np.nan
+    else:
+        valid_predictions["predicted_burned_fraction"] = np.clip(
+            regressor.predict(valid_df[feature_columns]),
+            0.0,
+            1.0,
+        )
     valid_predictions = add_signal_columns(valid_predictions, score_col="ranking_score")
 
     return {
@@ -327,29 +380,14 @@ def summarize_feature_importance(
     return [{"feature": name, "importance": float(score)} for name, score in pairs[:25]]
 
 
-def train_baseline_models(
-    feature_table_path: str | Path,
-    model_dir: str | Path | None = None,
-    config: TrainConfig = TrainConfig(),
-    run_root: str | Path | None = None,
-    run_name: str | None = None,
+def collect_holdout_metrics(
+    fitted: dict[str, Any],
+    train_df: pd.DataFrame,
+    valid_df: pd.DataFrame,
+    feature_columns: list[str],
+    config: TrainConfig,
+    df: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
-    LOGGER.info("Reading feature table %s", feature_table_path)
-    df = read_feature_table(feature_table_path)
-    LOGGER.info("Loaded %s rows x %s cols", f"{len(df):,}", df.shape[1])
-    feature_columns = select_feature_columns(df)
-    train_df, valid_df = temporal_split(df, config=config)
-    LOGGER.info(
-        "Split train %s rows (%s-%s) / valid %s rows (%s-%s)",
-        f"{len(train_df):,}",
-        int(train_df["year"].min()),
-        int(train_df["year"].max()),
-        f"{len(valid_df):,}",
-        int(valid_df["year"].min()),
-        int(valid_df["year"].max()),
-    )
-    fitted = fit_models(train_df, valid_df, feature_columns, config=config)
-
     valid_predictions = fitted["valid_predictions"]
     raw_classification = classification_metrics(
         valid_predictions["binary_risk_label"],
@@ -367,16 +405,14 @@ def train_baseline_models(
         valid_predictions["binary_risk_label"],
         valid_predictions["predicted_probability"],
     )
-    metrics = {
+    metrics: dict[str, Any] = {
         "model_family": fitted["model_family"],
+        "feature_set": config.feature_set,
+        "n_features": len(feature_columns),
         "train_years": [int(train_df["year"].min()), int(train_df["year"].max())],
         "valid_years": [int(valid_df["year"].min()), int(valid_df["year"].max())],
         "classification_raw": raw_classification,
         "classification": classification,
-        "regression": regression_metrics(
-            valid_predictions["burned_fraction"],
-            valid_predictions["predicted_burned_fraction"],
-        ),
         "calibration": {
             "strategy": fitted["calibration_details"],
             "raw_expected_calibration_error": expected_calibration_error(raw_calibration),
@@ -385,11 +421,6 @@ def train_baseline_models(
             "bins": calibration,
         },
         "presentation_guidance": build_presentation_guidance(classification),
-        "per_year_backtest": (
-            {}
-            if config.skip_yearly_backtest
-            else yearly_backtest(df, feature_columns, config=config)
-        ),
         "per_month": grouped_classification_metrics(valid_predictions, group_col="month_num"),
         "top_features": summarize_feature_importance(fitted["classifier"], feature_columns),
         "ranking_summary": {
@@ -405,6 +436,57 @@ def train_baseline_models(
         },
         "ranking_stability": ranking_stability(valid_predictions),
     }
+    if not config.skip_regressor:
+        metrics["regression"] = regression_metrics(
+            valid_predictions["burned_fraction"],
+            valid_predictions["predicted_burned_fraction"],
+        )
+    if config.skip_yearly_backtest or df is None:
+        metrics["per_year_backtest"] = {}
+    else:
+        metrics["per_year_backtest"] = yearly_backtest(df, feature_columns, config=config)
+    return metrics
+
+
+def train_baseline_models(
+    feature_table_path: str | Path,
+    model_dir: str | Path | None = None,
+    config: TrainConfig = TrainConfig(),
+    run_root: str | Path | None = None,
+    run_name: str | None = None,
+    df: pd.DataFrame | None = None,
+    write_predictions: bool = True,
+) -> dict[str, Any]:
+    if df is None:
+        LOGGER.info("Reading feature table %s", feature_table_path)
+        df = read_feature_table(feature_table_path)
+        LOGGER.info("Loaded %s rows x %s cols", f"{len(df):,}", df.shape[1])
+    feature_columns = select_feature_columns(
+        df,
+        feature_set=config.feature_set,
+        dynamic_prefixes=config.dynamic_prefixes,
+    )
+    LOGGER.info("Feature set %s: %s columns", config.feature_set, len(feature_columns))
+    train_df, valid_df = temporal_split(df, config=config)
+    LOGGER.info(
+        "Split train %s rows (%s-%s) / valid %s rows (%s-%s)",
+        f"{len(train_df):,}",
+        int(train_df["year"].min()),
+        int(train_df["year"].max()),
+        f"{len(valid_df):,}",
+        int(valid_df["year"].min()),
+        int(valid_df["year"].max()),
+    )
+    fitted = fit_models(train_df, valid_df, feature_columns, config=config)
+    metrics = collect_holdout_metrics(
+        fitted,
+        train_df,
+        valid_df,
+        feature_columns,
+        config=config,
+        df=df,
+    )
+    valid_predictions = fitted["valid_predictions"]
 
     layout = None
     if run_root is not None:
@@ -420,8 +502,9 @@ def train_baseline_models(
     if fitted["calibrator"] is not None:
         with (model_dir / "calibrator.pkl").open("wb") as handle:
             pickle.dump(fitted["calibrator"], handle)
-    with (model_dir / "regressor.pkl").open("wb") as handle:
-        pickle.dump(fitted["regressor"], handle)
+    if fitted["regressor"] is not None:
+        with (model_dir / "regressor.pkl").open("wb") as handle:
+            pickle.dump(fitted["regressor"], handle)
     write_json({"feature_columns": feature_columns}, model_dir / "feature_columns.json")
     write_json(
         {
@@ -444,17 +527,19 @@ def train_baseline_models(
                 "valid_start_year": config.valid_start_year,
                 "valid_end_year": config.valid_end_year,
                 "random_state": config.random_state,
+                "feature_set": config.feature_set,
                 "calibration_rows": fitted["calibration_rows"],
                 "model_train_rows": fitted["model_train_rows"],
             },
         },
         model_dir / "run_config.json",
     )
-    validation_predictions_path = model_dir / "validation_predictions.csv"
     metrics_path = save_metrics(metrics, model_dir / "metrics.json")
-    LOGGER.info("Writing validation predictions %s", validation_predictions_path)
-    valid_predictions.to_csv(validation_predictions_path, index=False)
-    LOGGER.info("Training complete")
+    validation_predictions_path = model_dir / "validation_predictions.csv"
+    if write_predictions:
+        LOGGER.info("Writing validation predictions %s", validation_predictions_path)
+        valid_predictions.to_csv(validation_predictions_path, index=False)
+    LOGGER.info("Training complete for feature set %s", config.feature_set)
 
     if layout is not None:
         write_stage_manifest(
@@ -467,20 +552,23 @@ def train_baseline_models(
                     "valid_start_year": config.valid_start_year,
                     "valid_end_year": config.valid_end_year,
                     "random_state": config.random_state,
+                    "feature_set": config.feature_set,
                 },
             },
             artifacts={
                 "classifier": str(model_dir / "classifier.pkl"),
                 "calibrator": str(model_dir / "calibrator.pkl") if (model_dir / "calibrator.pkl").exists() else None,
-                "regressor": str(model_dir / "regressor.pkl"),
+                "regressor": str(model_dir / "regressor.pkl") if (model_dir / "regressor.pkl").exists() else None,
                 "feature_columns": str(model_dir / "feature_columns.json"),
                 "signal_profile": str(model_dir / "signal_profile.json"),
                 "run_config": str(model_dir / "run_config.json"),
-                "validation_predictions": str(validation_predictions_path),
+                "validation_predictions": str(validation_predictions_path) if write_predictions else None,
                 "metrics": str(metrics_path),
             },
             summary={
                 "model_family": metrics["model_family"],
+                "feature_set": config.feature_set,
+                "n_features": len(feature_columns),
                 "train_rows": int(len(train_df)),
                 "valid_rows": int(len(valid_df)),
             },
@@ -490,6 +578,201 @@ def train_baseline_models(
         "metrics": metrics,
         "validation_predictions": valid_predictions,
         "feature_columns": feature_columns,
+        "model_dir": model_dir,
+    }
+
+
+def _metric_or_nan(metrics: dict[str, Any], field: str) -> float:
+    value = metrics.get(field, float("nan"))
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def ablation_comparison_row(arm: str, results: dict[str, Any]) -> dict[str, Any]:
+    raw = results["metrics"]["classification_raw"]
+    calibrated = results["metrics"]["classification"]
+    row: dict[str, Any] = {
+        "arm": arm,
+        "n_features": len(results["feature_columns"]),
+        "model_family": results["metrics"]["model_family"],
+    }
+    for field in ABLATION_COMPARISON_FIELDS:
+        row[field] = _metric_or_nan(raw, field)
+        row[f"{field}_calibrated"] = _metric_or_nan(calibrated, field)
+    return row
+
+
+def format_ablation_table(rows: list[dict[str, Any]]) -> str:
+    headers = (
+        "arm",
+        "n_features",
+        "roc_auc",
+        "pr_auc",
+        "brier_score",
+        "precision_at_0_5",
+        "precision_top_10pct",
+        "capture_top_10pct",
+    )
+    widths = {header: len(header) for header in headers}
+    rendered: list[dict[str, str]] = []
+    for row in rows:
+        rendered_row = {}
+        for header in headers:
+            value = row[header]
+            text = f"{value:.4f}" if isinstance(value, float) else str(value)
+            rendered_row[header] = text
+            widths[header] = max(widths[header], len(text))
+        rendered.append(rendered_row)
+
+    def fmt(row: dict[str, str]) -> str:
+        return "  ".join(row[header].ljust(widths[header]) for header in headers)
+
+    header_line = fmt({header: header for header in headers})
+    body = "\n".join(fmt(row) for row in rendered)
+    return f"{header_line}\n{body}"
+
+
+def add_history_deltas(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    history = next((row for row in rows if row["arm"] == "history"), None)
+    if history is None:
+        return rows
+    updated = []
+    for row in rows:
+        out = dict(row)
+        for field in ABLATION_COMPARISON_FIELDS:
+            out[f"{field}_delta_vs_history"] = out[field] - history[field]
+        updated.append(out)
+    return updated
+
+
+def run_feature_ablation(
+    feature_table_path: str | Path,
+    model_dir: str | Path | None = None,
+    config: TrainConfig = TrainConfig(),
+    run_root: str | Path | None = None,
+    run_name: str | None = None,
+) -> dict[str, Any]:
+    """Train history-only, ERA5-only, and both on one loaded table and one split."""
+    LOGGER.info("Reading feature table once for ablation %s", feature_table_path)
+    df = read_feature_table(feature_table_path)
+    LOGGER.info("Loaded %s rows x %s cols", f"{len(df):,}", df.shape[1])
+
+    layout = None
+    reports_dir: Path
+    ablation_root: Path
+    if run_root is not None:
+        layout = create_run_layout(run_root, run_name=run_name)
+        ablation_root = layout.models_dir / "ablation"
+        reports_dir = layout.reports_dir
+    elif model_dir is not None:
+        ablation_root = Path(model_dir) / "ablation"
+        reports_dir = Path(model_dir)
+    else:
+        raise ValueError("Either model_dir or run_root must be provided")
+
+    ablation_config = TrainConfig(
+        train_end_year=config.train_end_year,
+        valid_start_year=config.valid_start_year,
+        valid_end_year=config.valid_end_year,
+        random_state=config.random_state,
+        n_estimators=config.n_estimators,
+        skip_yearly_backtest=True,
+        skip_regressor=True,
+        dynamic_prefixes=config.dynamic_prefixes,
+    )
+    LOGGER.info(
+        "Ablation uses the same split as the baseline: train through %s, test %s-%s, %s trees. "
+        "Regressor and yearly backtest are skipped.",
+        ablation_config.train_end_year,
+        ablation_config.valid_start_year,
+        ablation_config.valid_end_year,
+        ablation_config.n_estimators,
+    )
+
+    arm_results: dict[str, Any] = {}
+    comparison_rows: list[dict[str, Any]] = []
+    for arm in ABLATION_ARMS:
+        LOGGER.info("=== Ablation arm: %s ===", arm)
+        arm_config = TrainConfig(
+            train_end_year=ablation_config.train_end_year,
+            valid_start_year=ablation_config.valid_start_year,
+            valid_end_year=ablation_config.valid_end_year,
+            random_state=ablation_config.random_state,
+            n_estimators=ablation_config.n_estimators,
+            skip_yearly_backtest=True,
+            skip_regressor=True,
+            feature_set=arm,
+            dynamic_prefixes=ablation_config.dynamic_prefixes,
+        )
+        results = train_baseline_models(
+            feature_table_path=feature_table_path,
+            model_dir=ablation_root / arm,
+            config=arm_config,
+            df=df,
+            write_predictions=False,
+        )
+        row = ablation_comparison_row(arm, results)
+        comparison_rows.append(row)
+        arm_results[arm] = {
+            "n_features": row["n_features"],
+            "feature_columns": results["feature_columns"],
+            "metrics_path": str(Path(results["model_dir"]) / "metrics.json"),
+            "classification_raw": results["metrics"]["classification_raw"],
+            "top_features": results["metrics"]["top_features"],
+        }
+        del results["validation_predictions"]
+
+    comparison_rows = add_history_deltas(comparison_rows)
+    comparison = {
+        "train_end_year": ablation_config.train_end_year,
+        "valid_start_year": ablation_config.valid_start_year,
+        "valid_end_year": ablation_config.valid_end_year,
+        "n_estimators": ablation_config.n_estimators,
+        "feature_table_path": str(feature_table_path),
+        "arms": comparison_rows,
+        "note": (
+            "All arms share calendar features (month_sin/month_cos/time_index). "
+            "history = calendar + burn-history lags/rolls. "
+            "era5 = calendar + lagged ERA5. "
+            "both = every numeric column in the feature table. "
+            "Ranking metrics use raw (uncalibrated) probabilities."
+        ),
+    }
+    comparison_json = reports_dir / "ablation_comparison.json"
+    comparison_csv = reports_dir / "ablation_comparison.csv"
+    write_json(comparison, comparison_json)
+    pd.DataFrame(comparison_rows).to_csv(comparison_csv, index=False)
+    table = format_ablation_table(comparison_rows)
+    LOGGER.info("Ablation comparison:\n%s", table)
+
+    if layout is not None:
+        write_stage_manifest(
+            layout=layout,
+            stage_name="ablation",
+            config={
+                "feature_table_path": str(feature_table_path),
+                "arms": list(ABLATION_ARMS),
+                "train_end_year": ablation_config.train_end_year,
+                "valid_start_year": ablation_config.valid_start_year,
+                "valid_end_year": ablation_config.valid_end_year,
+                "n_estimators": ablation_config.n_estimators,
+            },
+            artifacts={
+                "comparison_json": str(comparison_json),
+                "comparison_csv": str(comparison_csv),
+                **{arm: str(ablation_root / arm / "metrics.json") for arm in ABLATION_ARMS},
+            },
+            summary={"arms": comparison_rows},
+        )
+
+    return {
+        "comparison": comparison,
+        "table": table,
+        "comparison_json": comparison_json,
+        "comparison_csv": comparison_csv,
+        "arm_results": arm_results,
     }
 
 
@@ -508,19 +791,44 @@ def main() -> None:
         action="store_true",
         help="Skip refitting a new model for every validation year. Those extra fits are what Colab kills.",
     )
+    parser.add_argument(
+        "--feature-set",
+        choices=ABLATION_ARMS,
+        default="both",
+        help="Train one feature family. Ignored when --ablation is set.",
+    )
+    parser.add_argument(
+        "--ablation",
+        action="store_true",
+        help="Train history-only, ERA5-only, and both on the same split. Writes ablation_comparison.csv.",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+
+    config = TrainConfig(
+        train_end_year=args.train_end_year,
+        valid_start_year=args.valid_start_year,
+        valid_end_year=args.valid_end_year,
+        n_estimators=args.n_estimators,
+        skip_yearly_backtest=args.skip_yearly_backtest,
+        feature_set=args.feature_set,
+    )
+    if args.ablation:
+        results = run_feature_ablation(
+            feature_table_path=args.features,
+            model_dir=args.model_dir,
+            config=config,
+            run_root=args.run_root,
+            run_name=args.run_name,
+        )
+        print(results["table"])
+        print(json.dumps(results["comparison"], indent=2))
+        return
 
     results = train_baseline_models(
         feature_table_path=args.features,
         model_dir=args.model_dir,
-        config=TrainConfig(
-            train_end_year=args.train_end_year,
-            valid_start_year=args.valid_start_year,
-            valid_end_year=args.valid_end_year,
-            n_estimators=args.n_estimators,
-            skip_yearly_backtest=args.skip_yearly_backtest,
-        ),
+        config=config,
         run_root=args.run_root,
         run_name=args.run_name,
     )

@@ -12,7 +12,12 @@ from wildfire_risk.build_predictor_table import build_predictor_table
 from wildfire_risk.download_external import firms_date_windows, modis_tiles_for_bbox
 from wildfire_risk.grid import GridSpec, create_global_grid, create_month_index
 from wildfire_risk.render_maps import render_monthly_risk_maps
-from wildfire_risk.train_baseline import TrainConfig, select_feature_columns, train_baseline_models
+from wildfire_risk.train_baseline import (
+    TrainConfig,
+    run_feature_ablation,
+    select_feature_columns,
+    train_baseline_models,
+)
 
 
 class WildfireRiskPipelineTest(unittest.TestCase):
@@ -89,6 +94,17 @@ class WildfireRiskPipelineTest(unittest.TestCase):
             self.assertNotIn("era5_temperature_2m", features.columns)
             self.assertIn("era5_temperature_2m_lag_1", features.columns)
             self.assertIn("era5_precipitation_rollmean_3", features.columns)
+
+            history_cols = select_feature_columns(features, feature_set="history")
+            era5_cols = select_feature_columns(features, feature_set="era5")
+            both_cols = select_feature_columns(features, feature_set="both")
+            self.assertIn("month_sin", history_cols)
+            self.assertIn("month_sin", era5_cols)
+            self.assertTrue(any(column.startswith("burned_fraction_") for column in history_cols))
+            self.assertFalse(any(column.startswith("era5_") for column in history_cols))
+            self.assertTrue(any(column.startswith("era5_") for column in era5_cols))
+            self.assertFalse(any(column.startswith("burned_fraction_") for column in era5_cols))
+            self.assertEqual(set(history_cols) | set(era5_cols), set(both_cols))
 
     def test_build_predictor_table_from_monthly_csv(self) -> None:
         source = pd.DataFrame(
@@ -369,6 +385,77 @@ class WildfireRiskPipelineTest(unittest.TestCase):
             top_risk = pd.read_csv(run_root / run_name / "maps" / "top_risk_cells.csv")
             self.assertIn("relative_risk_score", top_risk.columns)
             self.assertIn("risk_band", top_risk.columns)
+
+    def test_feature_ablation_trains_three_arms_on_the_same_split(self) -> None:
+        months = pd.period_range("2020-01", "2021-12", freq="M")
+        label_rows = []
+        climate_rows = []
+        for cell_id, lat in (("000_000", 10.0), ("000_001", -20.0)):
+            for month in months:
+                month_num = int(month.month)
+                year = int(month.year)
+                is_hotspot = cell_id == "000_000" and month_num in {7, 8, 9}
+                burned = 1 if is_hotspot and year == 2021 else 0
+                label_rows.append(
+                    {
+                        "cell_id": cell_id,
+                        "month": str(month),
+                        "year": year,
+                        "month_num": month_num,
+                        "lat_center": lat,
+                        "lon_center": 20.0,
+                        "cell_area_km2": 1000.0,
+                        "burned_area_km2": 50.0 * burned,
+                        "burned_fraction": 0.05 * burned,
+                        "binary_risk_label": burned,
+                        "burned_pixel_count": 4 * burned,
+                        "burned_event_count": burned,
+                    }
+                )
+                climate_rows.append(
+                    {
+                        "cell_id": cell_id,
+                        "month": str(month),
+                        "temperature_2m": 25.0 + (8.0 if is_hotspot else 0.0),
+                        "precipitation": 20.0 if is_hotspot else 80.0,
+                    }
+                )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            labels_path = tmp_path / "labels.csv"
+            climate_path = tmp_path / "climate.csv"
+            pd.DataFrame(label_rows).to_csv(labels_path, index=False)
+            pd.DataFrame(climate_rows).to_csv(climate_path, index=False)
+            features_path = tmp_path / "features.csv"
+            build_feature_table(
+                labels_path=labels_path,
+                output_path=features_path,
+                dynamic_sources=[(str(climate_path), "era5")],
+            )
+
+            ablation = run_feature_ablation(
+                feature_table_path=features_path,
+                model_dir=tmp_path / "models",
+                config=TrainConfig(
+                    train_end_year=2020,
+                    valid_start_year=2021,
+                    valid_end_year=2021,
+                    n_estimators=20,
+                    skip_yearly_backtest=True,
+                    skip_regressor=True,
+                ),
+            )
+            arms = {row["arm"]: row for row in ablation["comparison"]["arms"]}
+            self.assertEqual(set(arms), {"history", "era5", "both"})
+            self.assertGreater(arms["era5"]["n_features"], 0)
+            self.assertGreater(arms["history"]["n_features"], 0)
+            self.assertGreaterEqual(arms["both"]["n_features"], arms["history"]["n_features"])
+            self.assertGreaterEqual(arms["both"]["n_features"], arms["era5"]["n_features"])
+            self.assertTrue((tmp_path / "models" / "ablation_comparison.csv").exists())
+            self.assertTrue((tmp_path / "models" / "ablation" / "history" / "metrics.json").exists())
+            self.assertFalse((tmp_path / "models" / "ablation" / "history" / "validation_predictions.csv").exists())
+            self.assertFalse((tmp_path / "models" / "classifier.pkl").exists())
 
 
 if __name__ == "__main__":
