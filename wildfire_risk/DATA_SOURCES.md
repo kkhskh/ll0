@@ -30,7 +30,7 @@ Reference URLs:
 | `MCD64A1` | Yes, 19832 HDF tiles for `2020-01` to `2026-02` in `datasets/wildfires/mcd64a1` | Not built. See `MCD64A1_INGESTION.md` |
 | `ERA5-Land` | Yes, `datasets/wildfires/era5_land/b09a78a9a0989d1946e3597dbfbc11ca.nc`, global `0.1` degree monthly means for `2020-01` to `2025-12` | Yes, `datasets/wildfires/era5_land/era5_land_predictors_2020_2025.csv` |
 | `NASA FIRMS` | No | No |
-| `MCD12Q1` | No | No |
+| `MCD12Q1` | Downloaded on Colab (~630 tiles, 2020-2024). Add 2019 for a no-leak 2020 join. | Converter added; table not built yet |
 | `NASADEM` | No | No |
 | `GPWv4` | No | No |
 | `gROADS` | No | No |

@@ -58,10 +58,12 @@ NON_FEATURE_COLUMNS = {
     "burned_area_km2",
     "burned_pixel_count",
     "burned_event_count",
+    "product_year",
 }
 
 CALENDAR_PREFIXES = ("month_sin", "month_cos", "time_index")
 HISTORY_PREFIXES = ("burned_fraction_", "binary_risk_label_")
+LANDCOVER_PREFIXES = ("landcover_",)
 DEFAULT_DYNAMIC_PREFIXES = ("era5",)
 ABLATION_ARMS = ("history", "era5", "both")
 ERA5_FAMILY_TOKENS: dict[str, tuple[str, ...]] = {
@@ -117,6 +119,8 @@ def feature_family(column: str, dynamic_prefixes: tuple[str, ...] = DEFAULT_DYNA
         return "calendar"
     if column.startswith(HISTORY_PREFIXES):
         return "history"
+    if column.startswith(LANDCOVER_PREFIXES):
+        return "landcover"
     for prefix in dynamic_prefixes:
         if column.startswith(f"{prefix}_"):
             return "era5"
@@ -154,7 +158,9 @@ def select_feature_columns(
     numeric_columns = [
         column
         for column in df.columns
-        if column not in NON_FEATURE_COLUMNS and np.issubdtype(df[column].dtype, np.number)
+        if column not in NON_FEATURE_COLUMNS
+        and not column.endswith("product_year")
+        and np.issubdtype(df[column].dtype, np.number)
     ]
     if not numeric_columns:
         raise ValueError("No numeric feature columns found in the feature table")

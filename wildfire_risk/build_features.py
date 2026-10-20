@@ -29,6 +29,7 @@ ID_COLUMNS = {
     "burned_area_km2",
     "burned_pixel_count",
     "burned_event_count",
+    "product_year",
 }
 
 

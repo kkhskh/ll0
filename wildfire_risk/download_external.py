@@ -640,7 +640,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     mcd12q1 = subparsers.add_parser("mcd12q1", help="Download MCD12Q1 annual land cover tiles")
     mcd12q1.add_argument("--dest", default="datasets/wildfires/mcd12q1")
-    mcd12q1.add_argument("--start-year", type=int, default=2020)
+    mcd12q1.add_argument("--start-year", type=int, default=2019)
     mcd12q1.add_argument("--end-year", type=int, default=2024)
     mcd12q1.add_argument("--bbox", help="Limit to west,south,east,north")
     mcd12q1.add_argument("--tiles", nargs="*", help="Explicit MODIS tiles such as h08v05")

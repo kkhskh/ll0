@@ -144,6 +144,36 @@ python wildfire_risk/build_features.py \
   --run-name "wildfire-risk-mvp-2020-2025-noleak-v3"
 ```
 
+## MCD12Q1 Land Cover
+
+Annual IGBP land cover is a static/slow feature. `convert_mcd12q1.py` reads the HDF tiles,
+aggregates 500 m `LC_Type1` pixels onto the 0.5 degree grid, and writes class fractions plus the
+majority class.
+
+The join is no-leak by default: the map for product year `Y` is used as the `year = Y+1` feature.
+If 2019 tiles are missing, 2020 months get the 2020 map as a one-year fallback.
+
+```bash
+python -m wildfire_risk.convert_mcd12q1 \
+  --input datasets/wildfires/mcd12q1 \
+  --start-year 2019 \
+  --end-year 2024 \
+  --stride 4 \
+  --run-root artifacts/wildfire_risk_runs \
+  --run-name wildfire-risk-mvp-2020-2025-noleak-v4
+```
+
+Then rebuild features without overwriting the v3 table:
+
+```bash
+python wildfire_risk/build_features.py \
+  --labels artifacts/wildfire_risk_runs/labels_full_2020_2025.csv \
+  --dynamic-source datasets/wildfires/era5_land/era5_land_predictors_2020_2025.csv:era5 \
+  --static-source artifacts/wildfire_risk_runs/wildfire-risk-mvp-2020-2025-noleak-v4/features/mcd12q1_landcover.csv:landcover \
+  --run-root artifacts/wildfire_risk_runs \
+  --run-name wildfire-risk-mvp-2020-2025-noleak-v4
+```
+
 ## Getting The Raw Sources
 
 `download_external.py` fetches the sources that are not on disk yet. It needs Earthdata Login
@@ -155,7 +185,7 @@ python wildfire_risk/download_external.py list
 
 python wildfire_risk/download_external.py gpw --years 2020 --resolution 2pt5_min
 python wildfire_risk/download_external.py groads --region global
-python wildfire_risk/download_external.py mcd12q1 --start-year 2020 --end-year 2024
+python wildfire_risk/download_external.py mcd12q1 --start-year 2019 --end-year 2024
 python wildfire_risk/download_external.py nasadem --bbox -125,32,-114,42
 python wildfire_risk/download_external.py firms --start-month 2020-01 --end-month 2025-12
 ```

@@ -11,12 +11,21 @@ from wildfire_risk.build_labels import build_label_table
 from wildfire_risk.build_predictor_table import build_predictor_table
 from wildfire_risk.download_external import firms_date_windows, modis_tiles_for_bbox
 from wildfire_risk.grid import GridSpec, create_global_grid, create_month_index
+from wildfire_risk.convert_mcd12q1 import (
+    accumulate_igbp_counts,
+    assign_feature_years,
+    counts_to_rows,
+    igbp_group_name,
+    parse_mcd12q1_filename,
+    sinusoidal_xy_to_lonlat,
+)
 from wildfire_risk.evaluate import assign_continent, score_continents
 from wildfire_risk.render_maps import render_monthly_risk_maps
 from wildfire_risk.train_baseline import (
     TrainConfig,
     apply_probability_calibrator,
     era5_family_for_column,
+    feature_family,
     fit_probability_calibrator,
     run_era5_family_ablation,
     run_feature_ablation,
@@ -463,6 +472,74 @@ class WildfireRiskPipelineTest(unittest.TestCase):
             self.assertTrue((tmp_path / "models" / "ablation" / "history" / "metrics.json").exists())
             self.assertFalse((tmp_path / "models" / "ablation" / "history" / "validation_predictions.csv").exists())
             self.assertFalse((tmp_path / "models" / "classifier.pkl").exists())
+
+    def test_mcd12q1_aggregates_igbp_fractions_and_shifts_to_next_year(self) -> None:
+        self.assertEqual(parse_mcd12q1_filename("MCD12Q1.A2023001.h27v12.061.2024233123456.hdf"), (2023, "h27v12"))
+        lons, lats = sinusoidal_xy_to_lonlat(np.array([0.0]), np.array([0.0]))
+        self.assertAlmostEqual(float(lons[0]), 0.0, places=6)
+        self.assertAlmostEqual(float(lats[0]), 0.0, places=6)
+        self.assertEqual(igbp_group_name(2), "forest")
+        self.assertEqual(igbp_group_name(10), "grass")
+        self.assertEqual(igbp_group_name(12), "crop")
+
+        spec = GridSpec(resolution_deg=0.5)
+        class_counts: dict[str, np.ndarray] = {}
+        accumulate_igbp_counts(
+            class_counts,
+            classes=np.array([10, 10, 10, 2, 255, 0], dtype=int),
+            lats=np.array([-25.1, -25.1, -25.1, -25.1, -25.1, -25.1]),
+            lons=np.array([135.1, 135.1, 135.1, 135.1, 135.1, 135.1]),
+            grid_spec=spec,
+        )
+        rows = counts_to_rows(class_counts, product_year=2023)
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["product_year"], 2023)
+        self.assertEqual(row["land_cover_majority"], 10)
+        self.assertEqual(row["land_cover_valid_pixel_count"], 5)
+        self.assertAlmostEqual(row["frac_grass"], 0.6)
+        self.assertAlmostEqual(row["frac_forest"], 0.2)
+        self.assertAlmostEqual(row["frac_water"], 0.2)
+
+        shifted = assign_feature_years(pd.DataFrame(rows), year_offset=1, fill_first_year=True)
+        self.assertEqual(sorted(shifted["year"].unique().tolist()), [2023, 2024])
+        self.assertTrue(((shifted["year"] == 2024) & (shifted["product_year"] == 2023)).any())
+        self.assertTrue(((shifted["year"] == 2023) & (shifted["product_year"] == 2023)).any())
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            labels_path = Path(tmp_dir) / "labels.csv"
+            landcover_path = Path(tmp_dir) / "landcover.csv"
+            features_path = Path(tmp_dir) / "features.csv"
+            pd.DataFrame(
+                {
+                    "cell_id": ["129_630", "129_630"],
+                    "month": ["2023-12", "2024-01"],
+                    "year": [2023, 2024],
+                    "month_num": [12, 1],
+                    "lat_center": [-25.25, -25.25],
+                    "lon_center": [135.25, 135.25],
+                    "cell_area_km2": [1000.0, 1000.0],
+                    "burned_area_km2": [0.0, 10.0],
+                    "burned_fraction": [0.0, 0.01],
+                    "binary_risk_label": [0, 1],
+                    "burned_pixel_count": [0, 4],
+                    "burned_event_count": [0, 1],
+                }
+            ).to_csv(labels_path, index=False)
+            shifted[["cell_id", "year", "land_cover_majority", "frac_grass", "frac_forest"]].to_csv(
+                landcover_path, index=False
+            )
+            features = build_feature_table(
+                labels_path=labels_path,
+                output_path=features_path,
+                static_sources=[(str(landcover_path), "landcover")],
+                restrict_to_dynamic_cells=False,
+            )
+            jan = features[features["month"] == "2024-01"].iloc[0]
+            dec = features[features["month"] == "2023-12"].iloc[0]
+            self.assertAlmostEqual(float(jan["landcover_frac_grass"]), 0.6, places=5)
+            self.assertAlmostEqual(float(dec["landcover_frac_grass"]), 0.6, places=5)
+            self.assertIn("landcover", {feature_family(col) for col in features.columns})
 
     def test_continent_boxes_label_known_fire_regions(self) -> None:
         points = pd.DataFrame(
