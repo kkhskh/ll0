@@ -14,7 +14,9 @@ from wildfire_risk.grid import GridSpec, create_global_grid, create_month_index
 from wildfire_risk.render_maps import render_monthly_risk_maps
 from wildfire_risk.train_baseline import (
     TrainConfig,
+    apply_probability_calibrator,
     era5_family_for_column,
+    fit_probability_calibrator,
     run_era5_family_ablation,
     run_feature_ablation,
     select_feature_columns,
@@ -374,6 +376,8 @@ class WildfireRiskPipelineTest(unittest.TestCase):
             self.assertTrue((run_root / run_name / "models" / "signal_profile.json").exists())
             self.assertIn("raw_predicted_probability", results["validation_predictions"].columns)
             self.assertIn("ranking_score", results["validation_predictions"].columns)
+            self.assertIn("month_risk_percentile", results["validation_predictions"].columns)
+            self.assertEqual(results["metrics"]["calibration"]["strategy"]["method"], "isotonic")
 
             rendered = render_monthly_risk_maps(
                 run_root / run_name / "models" / "validation_predictions.csv",
@@ -458,6 +462,16 @@ class WildfireRiskPipelineTest(unittest.TestCase):
             self.assertTrue((tmp_path / "models" / "ablation" / "history" / "metrics.json").exists())
             self.assertFalse((tmp_path / "models" / "ablation" / "history" / "validation_predictions.csv").exists())
             self.assertFalse((tmp_path / "models" / "classifier.pkl").exists())
+
+    def test_isotonic_calibrator_is_monotonic_and_bounded(self) -> None:
+        raw = np.array([0.05, 0.10, 0.20, 0.80, 0.90, 0.95])
+        y_true = pd.Series([0, 0, 0, 1, 1, 1])
+        calibrator, details = fit_probability_calibrator(raw, y_true, method="isotonic")
+        self.assertEqual(details["method"], "isotonic")
+        calibrated = apply_probability_calibrator(calibrator, raw)
+        self.assertTrue(np.all(calibrated >= 0.0))
+        self.assertTrue(np.all(calibrated <= 1.0))
+        self.assertGreaterEqual(calibrated[-1], calibrated[0])
 
     def test_era5_family_filters_drop_one_variable_group(self) -> None:
         self.assertEqual(era5_family_for_column("era5_temperature_2m_lag_1"), "temperature")

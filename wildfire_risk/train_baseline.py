@@ -14,6 +14,7 @@ LOGGER = logging.getLogger(__name__)
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
+from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 
 try:
@@ -101,6 +102,7 @@ class TrainConfig:
     dynamic_prefixes: tuple[str, ...] = DEFAULT_DYNAMIC_PREFIXES
     drop_era5_families: tuple[str, ...] = ()
     keep_era5_families: tuple[str, ...] | None = None
+    calibration_method: str = "isotonic"
 
 
 def read_feature_table(path: str | Path) -> pd.DataFrame:
@@ -314,20 +316,35 @@ def split_model_and_calibration_data(train_df: pd.DataFrame) -> tuple[pd.DataFra
     return model_train_df, calibration_df
 
 
-def fit_probability_calibrator(raw_probabilities: np.ndarray, y_true: pd.Series) -> tuple[Any | None, dict[str, Any]]:
-    if len(raw_probabilities) == 0 or y_true.nunique() < 2:
-        return None, {"method": "identity", "reason": "insufficient calibration holdout"}
+def fit_probability_calibrator(
+    raw_probabilities: np.ndarray,
+    y_true: pd.Series,
+    method: str = "isotonic",
+) -> tuple[Any | None, dict[str, Any]]:
+    if method in {"none", "identity"} or len(raw_probabilities) == 0 or y_true.nunique() < 2:
+        return None, {"method": "identity", "reason": "insufficient calibration holdout or method=none"}
 
-    calibrator = LogisticRegression(random_state=42)
-    sample_weight = make_balanced_sample_weight(y_true)
-    calibrator.fit(raw_probabilities.reshape(-1, 1), y_true, sample_weight=sample_weight)
-    return calibrator, {"method": "platt_scaling", "rows": int(len(y_true))}
+    if method == "platt":
+        calibrator = LogisticRegression(random_state=42)
+        sample_weight = make_balanced_sample_weight(y_true)
+        calibrator.fit(raw_probabilities.reshape(-1, 1), y_true, sample_weight=sample_weight)
+        return calibrator, {"method": "platt_scaling", "rows": int(len(y_true))}
+
+    if method != "isotonic":
+        raise ValueError(f"Unknown calibration method {method!r}. Use isotonic, platt, or none.")
+
+    # Fit on natural class frequencies so predicted P tracks the observed fire rate.
+    calibrator = IsotonicRegression(y_min=0.0, y_max=1.0, increasing=True, out_of_bounds="clip")
+    calibrator.fit(raw_probabilities, np.asarray(y_true))
+    return calibrator, {"method": "isotonic", "rows": int(len(y_true))}
 
 
 def apply_probability_calibrator(calibrator: Any | None, raw_probabilities: np.ndarray) -> np.ndarray:
     if calibrator is None:
         return raw_probabilities
-    return calibrator.predict_proba(raw_probabilities.reshape(-1, 1))[:, 1]
+    if hasattr(calibrator, "predict_proba"):
+        return calibrator.predict_proba(raw_probabilities.reshape(-1, 1))[:, 1]
+    return np.clip(np.asarray(calibrator.predict(raw_probabilities), dtype=float), 0.0, 1.0)
 
 
 def add_signal_columns(
@@ -340,6 +357,12 @@ def add_signal_columns(
     out["risk_rank"] = ranks.astype(int)
     out["relative_risk_score"] = np.clip(100.0 * (1.0 - ((ranks - 1.0) / total)), 0.0, 100.0)
     out["risk_percentile"] = np.clip(1.0 - ((ranks - 1.0) / total), 0.0, 1.0)
+    month_key = "month_num" if "month_num" in out.columns else ("month" if "month" in out.columns else None)
+    if month_key is not None:
+        out["month_risk_percentile"] = out.groupby(month_key, sort=False)[score_col].rank(
+            method="average",
+            pct=True,
+        )
     bins = [-0.01, 0.5, 0.8, 0.95, 1.01]
     labels = ["monitor", "elevated", "high", "extreme"]
     out["risk_band"] = pd.cut(out["risk_percentile"], bins=bins, labels=labels).astype(str)
@@ -368,6 +391,12 @@ def fit_models(
         calibrator, calibration_details = fit_probability_calibrator(
             raw_calibration_probabilities,
             calibration_df["binary_risk_label"],
+            method=config.calibration_method,
+        )
+        LOGGER.info(
+            "Fitted %s calibrator on %s holdout rows",
+            calibration_details.get("method"),
+            f"{calibration_details.get('rows', 0):,}",
         )
 
     valid_predictions = valid_df.copy()
@@ -595,6 +624,7 @@ def train_baseline_models(
                 "keep_era5_families": (
                     list(config.keep_era5_families) if config.keep_era5_families is not None else None
                 ),
+                "calibration_method": config.calibration_method,
                 "calibration_rows": fitted["calibration_rows"],
                 "model_train_rows": fitted["model_train_rows"],
             },
@@ -1148,6 +1178,29 @@ def main() -> None:
             "from the full both model, then retrain with only the families that move PR-AUC/ROC."
         ),
     )
+    parser.add_argument(
+        "--drop-era5-family",
+        action="append",
+        dest="drop_era5_families",
+        choices=list(ERA5_FAMILY_ORDER),
+        help="ERA5 family to drop from the working model. Repeatable. Use `wind` for the current baseline.",
+    )
+    parser.add_argument(
+        "--calibration-method",
+        choices=("isotonic", "platt", "none"),
+        default="isotonic",
+        help="Isotonic matches observed fire rates. Platt was the previous scaler and does not fix maps.",
+    )
+    parser.add_argument(
+        "--skip-regressor",
+        action="store_true",
+        help="Skip the burned-fraction regressor. Maps only need the classifier.",
+    )
+    parser.add_argument(
+        "--render-maps",
+        action="store_true",
+        help="Render within-month percentile maps after training.",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
@@ -1157,7 +1210,10 @@ def main() -> None:
         valid_end_year=args.valid_end_year,
         n_estimators=args.n_estimators,
         skip_yearly_backtest=args.skip_yearly_backtest,
+        skip_regressor=args.skip_regressor,
         feature_set=args.feature_set,
+        drop_era5_families=tuple(args.drop_era5_families or ()),
+        calibration_method=args.calibration_method,
     )
     if args.era5_family_ablation:
         results = run_era5_family_ablation(
@@ -1189,6 +1245,20 @@ def main() -> None:
         run_root=args.run_root,
         run_name=args.run_name,
     )
+    if args.render_maps:
+        try:
+            from .render_maps import render_monthly_risk_maps
+        except ImportError:  # pragma: no cover - allows direct script execution
+            from render_maps import render_monthly_risk_maps
+
+        prediction_path = Path(results["model_dir"]) / "validation_predictions.csv"
+        rendered = render_monthly_risk_maps(
+            prediction_path,
+            run_root=args.run_root,
+            run_name=args.run_name,
+            output_dir=None if args.run_root else Path(results["model_dir"]) / "maps",
+        )
+        print(f"Rendered {len(rendered)} monthly percentile maps")
     print(json.dumps(results["metrics"], indent=2))
 
 
