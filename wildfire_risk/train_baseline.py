@@ -7,7 +7,7 @@ import logging
 import pickle
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 LOGGER = logging.getLogger(__name__)
 
@@ -63,6 +63,18 @@ CALENDAR_PREFIXES = ("month_sin", "month_cos", "time_index")
 HISTORY_PREFIXES = ("burned_fraction_", "binary_risk_label_")
 DEFAULT_DYNAMIC_PREFIXES = ("era5",)
 ABLATION_ARMS = ("history", "era5", "both")
+ERA5_FAMILY_TOKENS: dict[str, tuple[str, ...]] = {
+    "temperature": ("temperature_2m",),
+    "precip": ("precipitation",),
+    "soil_moisture": ("soil_moisture",),
+    "wind": ("wind_u10", "wind_v10", "wind_speed"),
+    "hot_dry": ("hot_dry_factor", "potential_evaporation", "climate_water_balance"),
+}
+ERA5_FAMILY_ORDER = ("temperature", "precip", "soil_moisture", "wind", "hot_dry")
+# A family "matters" if dropping it costs at least this much vs the full both model.
+ERA5_KEEP_MIN_PR_AUC_DROP = 0.005
+ERA5_KEEP_MIN_ROC_AUC_DROP = 0.003
+ERA5_KEEP_MIN_CAPTURE_DROP = 0.005
 ABLATION_COMPARISON_FIELDS = (
     "roc_auc",
     "pr_auc",
@@ -87,6 +99,8 @@ class TrainConfig:
     skip_regressor: bool = False
     feature_set: str = "both"
     dynamic_prefixes: tuple[str, ...] = DEFAULT_DYNAMIC_PREFIXES
+    drop_era5_families: tuple[str, ...] = ()
+    keep_era5_families: tuple[str, ...] | None = None
 
 
 def read_feature_table(path: str | Path) -> pd.DataFrame:
@@ -107,10 +121,33 @@ def feature_family(column: str, dynamic_prefixes: tuple[str, ...] = DEFAULT_DYNA
     return "other"
 
 
+def era5_family_for_column(
+    column: str,
+    dynamic_prefixes: tuple[str, ...] = DEFAULT_DYNAMIC_PREFIXES,
+) -> str | None:
+    rest = None
+    for prefix in dynamic_prefixes:
+        head = f"{prefix}_"
+        if column.startswith(head):
+            rest = column[len(head) :]
+            break
+    if rest is None:
+        return None
+
+    for family in ERA5_FAMILY_ORDER:
+        tokens = sorted(ERA5_FAMILY_TOKENS[family], key=len, reverse=True)
+        for token in tokens:
+            if rest == token or rest.startswith(f"{token}_"):
+                return family
+    return "other_era5"
+
+
 def select_feature_columns(
     df: pd.DataFrame,
     feature_set: str = "both",
     dynamic_prefixes: tuple[str, ...] = DEFAULT_DYNAMIC_PREFIXES,
+    drop_era5_families: tuple[str, ...] = (),
+    keep_era5_families: tuple[str, ...] | None = None,
 ) -> list[str]:
     numeric_columns = [
         column
@@ -120,17 +157,35 @@ def select_feature_columns(
     if not numeric_columns:
         raise ValueError("No numeric feature columns found in the feature table")
     if feature_set == "both":
-        return numeric_columns
-    if feature_set not in ("history", "era5"):
+        selected = numeric_columns
+    elif feature_set in ("history", "era5"):
+        allowed = {"calendar", feature_set}
+        selected = [column for column in numeric_columns if feature_family(column, dynamic_prefixes) in allowed]
+        if not any(feature_family(column, dynamic_prefixes) == feature_set for column in selected):
+            raise ValueError(
+                f"No {feature_set} features found. History columns start with burned_fraction_; "
+                "ERA5 columns start with era5_."
+            )
+    else:
         raise ValueError(f"Unknown feature_set {feature_set!r}. Use history, era5, or both.")
 
-    allowed = {"calendar", feature_set}
-    selected = [column for column in numeric_columns if feature_family(column, dynamic_prefixes) in allowed]
-    if not any(feature_family(column, dynamic_prefixes) == feature_set for column in selected):
-        raise ValueError(
-            f"No {feature_set} features found. History columns start with burned_fraction_; "
-            "ERA5 columns start with era5_."
-        )
+    if keep_era5_families is not None:
+        keep = set(keep_era5_families)
+        selected = [
+            column
+            for column in selected
+            if feature_family(column, dynamic_prefixes) != "era5"
+            or era5_family_for_column(column, dynamic_prefixes) in keep
+        ]
+    if drop_era5_families:
+        drop = set(drop_era5_families)
+        selected = [
+            column
+            for column in selected
+            if era5_family_for_column(column, dynamic_prefixes) not in drop
+        ]
+    if not selected:
+        raise ValueError("No numeric feature columns remain after applying ERA5 family filters")
     return selected
 
 
@@ -465,8 +520,16 @@ def train_baseline_models(
         df,
         feature_set=config.feature_set,
         dynamic_prefixes=config.dynamic_prefixes,
+        drop_era5_families=config.drop_era5_families,
+        keep_era5_families=config.keep_era5_families,
     )
-    LOGGER.info("Feature set %s: %s columns", config.feature_set, len(feature_columns))
+    LOGGER.info(
+        "Feature set %s: %s columns (drop_era5=%s keep_era5=%s)",
+        config.feature_set,
+        len(feature_columns),
+        list(config.drop_era5_families) or "none",
+        list(config.keep_era5_families) if config.keep_era5_families is not None else "all",
+    )
     train_df, valid_df = temporal_split(df, config=config)
     LOGGER.info(
         "Split train %s rows (%s-%s) / valid %s rows (%s-%s)",
@@ -528,6 +591,10 @@ def train_baseline_models(
                 "valid_end_year": config.valid_end_year,
                 "random_state": config.random_state,
                 "feature_set": config.feature_set,
+                "drop_era5_families": list(config.drop_era5_families),
+                "keep_era5_families": (
+                    list(config.keep_era5_families) if config.keep_era5_families is not None else None
+                ),
                 "calibration_rows": fitted["calibration_rows"],
                 "model_train_rows": fitted["model_train_rows"],
             },
@@ -604,8 +671,11 @@ def ablation_comparison_row(arm: str, results: dict[str, Any]) -> dict[str, Any]
     return row
 
 
-def format_ablation_table(rows: list[dict[str, Any]]) -> str:
-    headers = (
+def format_ablation_table(
+    rows: list[dict[str, Any]],
+    headers: tuple[str, ...] | None = None,
+) -> str:
+    headers = headers or (
         "arm",
         "n_features",
         "roc_auc",
@@ -634,17 +704,24 @@ def format_ablation_table(rows: list[dict[str, Any]]) -> str:
     return f"{header_line}\n{body}"
 
 
-def add_history_deltas(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    history = next((row for row in rows if row["arm"] == "history"), None)
-    if history is None:
+def add_reference_deltas(
+    rows: list[dict[str, Any]],
+    reference_arm: str,
+) -> list[dict[str, Any]]:
+    reference = next((row for row in rows if row["arm"] == reference_arm), None)
+    if reference is None:
         return rows
     updated = []
     for row in rows:
         out = dict(row)
         for field in ABLATION_COMPARISON_FIELDS:
-            out[f"{field}_delta_vs_history"] = out[field] - history[field]
+            out[f"{field}_delta_vs_{reference_arm}"] = out[field] - reference[field]
         updated.append(out)
     return updated
+
+
+def add_history_deltas(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return add_reference_deltas(rows, "history")
 
 
 def run_feature_ablation(
@@ -776,6 +853,267 @@ def run_feature_ablation(
     }
 
 
+def present_era5_families(
+    columns: Iterable[str],
+    dynamic_prefixes: tuple[str, ...] = DEFAULT_DYNAMIC_PREFIXES,
+) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {family: [] for family in ERA5_FAMILY_ORDER}
+    grouped["other_era5"] = []
+    for column in columns:
+        family = era5_family_for_column(column, dynamic_prefixes)
+        if family is None:
+            continue
+        grouped.setdefault(family, []).append(column)
+    return grouped
+
+
+def recommend_kept_era5_families(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    both = next(row for row in rows if row["arm"] == "both")
+    kept: list[str] = []
+    dropped: list[str] = []
+    details: list[dict[str, Any]] = []
+    for family in ERA5_FAMILY_ORDER:
+        row = next((item for item in rows if item["arm"] == f"drop_{family}"), None)
+        if row is None:
+            continue
+        pr_drop = both["pr_auc"] - row["pr_auc"]
+        roc_drop = both["roc_auc"] - row["roc_auc"]
+        capture_drop = both["capture_top_10pct"] - row["capture_top_10pct"]
+        matters = (
+            pr_drop >= ERA5_KEEP_MIN_PR_AUC_DROP
+            or roc_drop >= ERA5_KEEP_MIN_ROC_AUC_DROP
+            or capture_drop >= ERA5_KEEP_MIN_CAPTURE_DROP
+        )
+        record = {
+            "family": family,
+            "n_features_removed": int(both["n_features"] - row["n_features"]),
+            "pr_auc_drop": pr_drop,
+            "roc_auc_drop": roc_drop,
+            "capture_top_10pct_drop": capture_drop,
+            "keep": matters,
+        }
+        details.append(record)
+        if matters:
+            kept.append(family)
+        else:
+            dropped.append(family)
+    return {
+        "keep": kept,
+        "drop": dropped,
+        "details": details,
+        "thresholds": {
+            "pr_auc": ERA5_KEEP_MIN_PR_AUC_DROP,
+            "roc_auc": ERA5_KEEP_MIN_ROC_AUC_DROP,
+            "capture_top_10pct": ERA5_KEEP_MIN_CAPTURE_DROP,
+        },
+        "rule": (
+            "Keep a family if dropping it from the full both model costs at least "
+            f"{ERA5_KEEP_MIN_PR_AUC_DROP} PR-AUC, {ERA5_KEEP_MIN_ROC_AUC_DROP} ROC-AUC, "
+            f"or {ERA5_KEEP_MIN_CAPTURE_DROP} top-10% capture."
+        ),
+    }
+
+
+def _ablation_train_config(
+    config: TrainConfig,
+    feature_set: str = "both",
+    drop_era5_families: tuple[str, ...] = (),
+    keep_era5_families: tuple[str, ...] | None = None,
+) -> TrainConfig:
+    return TrainConfig(
+        train_end_year=config.train_end_year,
+        valid_start_year=config.valid_start_year,
+        valid_end_year=config.valid_end_year,
+        random_state=config.random_state,
+        n_estimators=config.n_estimators,
+        skip_yearly_backtest=True,
+        skip_regressor=True,
+        feature_set=feature_set,
+        dynamic_prefixes=config.dynamic_prefixes,
+        drop_era5_families=drop_era5_families,
+        keep_era5_families=keep_era5_families,
+    )
+
+
+def _fit_named_arm(
+    arm: str,
+    df: pd.DataFrame,
+    feature_table_path: str | Path,
+    model_dir: Path,
+    config: TrainConfig,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    LOGGER.info("=== Ablation arm: %s ===", arm)
+    results = train_baseline_models(
+        feature_table_path=feature_table_path,
+        model_dir=model_dir,
+        config=config,
+        df=df,
+        write_predictions=False,
+    )
+    row = ablation_comparison_row(arm, results)
+    summary = {
+        "n_features": row["n_features"],
+        "feature_columns": results["feature_columns"],
+        "metrics_path": str(Path(results["model_dir"]) / "metrics.json"),
+        "classification_raw": results["metrics"]["classification_raw"],
+        "top_features": results["metrics"]["top_features"],
+    }
+    del results["validation_predictions"]
+    return row, summary
+
+
+def run_era5_family_ablation(
+    feature_table_path: str | Path,
+    model_dir: str | Path | None = None,
+    config: TrainConfig = TrainConfig(),
+    run_root: str | Path | None = None,
+    run_name: str | None = None,
+) -> dict[str, Any]:
+    """Drop one ERA5 family at a time from the full both model, then retrain the keepers."""
+    LOGGER.info("Reading feature table once for ERA5 family ablation %s", feature_table_path)
+    df = read_feature_table(feature_table_path)
+    LOGGER.info("Loaded %s rows x %s cols", f"{len(df):,}", df.shape[1])
+
+    layout = None
+    if run_root is not None:
+        layout = create_run_layout(run_root, run_name=run_name)
+        ablation_root = layout.models_dir / "era5_family_ablation"
+        reports_dir = layout.reports_dir
+    elif model_dir is not None:
+        ablation_root = Path(model_dir) / "era5_family_ablation"
+        reports_dir = Path(model_dir)
+    else:
+        raise ValueError("Either model_dir or run_root must be provided")
+
+    grouped = present_era5_families(df.columns, config.dynamic_prefixes)
+    for family in ERA5_FAMILY_ORDER:
+        LOGGER.info("ERA5 family %s: %s columns", family, len(grouped[family]))
+    if grouped["other_era5"]:
+        LOGGER.warning("Unmapped ERA5 columns left in every arm: %s", grouped["other_era5"])
+
+    base_config = _ablation_train_config(config, feature_set="both")
+    LOGGER.info(
+        "ERA5 family ablation uses train through %s, test %s-%s, %s trees.",
+        base_config.train_end_year,
+        base_config.valid_start_year,
+        base_config.valid_end_year,
+        base_config.n_estimators,
+    )
+
+    arm_results: dict[str, Any] = {}
+    comparison_rows: list[dict[str, Any]] = []
+
+    both_row, both_summary = _fit_named_arm(
+        "both",
+        df,
+        feature_table_path,
+        ablation_root / "both",
+        base_config,
+    )
+    comparison_rows.append(both_row)
+    arm_results["both"] = both_summary
+
+    for family in ERA5_FAMILY_ORDER:
+        if not grouped[family]:
+            LOGGER.info("Skipping drop_%s: no columns for that family in the feature table", family)
+            continue
+        row, summary = _fit_named_arm(
+            f"drop_{family}",
+            df,
+            feature_table_path,
+            ablation_root / f"drop_{family}",
+            _ablation_train_config(config, feature_set="both", drop_era5_families=(family,)),
+        )
+        comparison_rows.append(row)
+        arm_results[f"drop_{family}"] = summary
+
+    comparison_rows = add_reference_deltas(comparison_rows, "both")
+    recommendation = recommend_kept_era5_families(comparison_rows)
+    LOGGER.info("ERA5 keep: %s", recommendation["keep"] or "none")
+    LOGGER.info("ERA5 drop: %s", recommendation["drop"] or "none")
+
+    if recommendation["keep"]:
+        kept_row, kept_summary = _fit_named_arm(
+            "kept",
+            df,
+            feature_table_path,
+            ablation_root / "kept",
+            _ablation_train_config(
+                config,
+                feature_set="both",
+                keep_era5_families=tuple(recommendation["keep"]),
+            ),
+        )
+        comparison_rows.append(kept_row)
+        arm_results["kept"] = kept_summary
+        comparison_rows = add_reference_deltas(comparison_rows, "both")
+    else:
+        LOGGER.info("No ERA5 family moved the both-model enough; not retraining a reduced weather set.")
+
+    family_headers = (
+        "arm",
+        "n_features",
+        "roc_auc",
+        "pr_auc",
+        "precision_top_10pct",
+        "capture_top_10pct",
+        "pr_auc_delta_vs_both",
+        "roc_auc_delta_vs_both",
+    )
+    comparison = {
+        "train_end_year": base_config.train_end_year,
+        "valid_start_year": base_config.valid_start_year,
+        "valid_end_year": base_config.valid_end_year,
+        "n_estimators": base_config.n_estimators,
+        "feature_table_path": str(feature_table_path),
+        "family_columns": {family: grouped[family] for family in (*ERA5_FAMILY_ORDER, "other_era5")},
+        "recommendation": recommendation,
+        "arms": comparison_rows,
+        "note": (
+            "Reference arm `both` is history + all ERA5. "
+            "Each drop_* arm removes one ERA5 family from that full model. "
+            "`kept` retrains history + only the families that moved PR-AUC/ROC/top-10% capture. "
+            "hot_dry includes hot_dry_factor, potential_evaporation, and climate_water_balance."
+        ),
+    }
+    comparison_json = reports_dir / "era5_family_ablation.json"
+    comparison_csv = reports_dir / "era5_family_ablation.csv"
+    write_json(comparison, comparison_json)
+    pd.DataFrame(comparison_rows).to_csv(comparison_csv, index=False)
+    table = format_ablation_table(comparison_rows, headers=family_headers)
+    LOGGER.info("ERA5 family ablation:\n%s", table)
+
+    if layout is not None:
+        write_stage_manifest(
+            layout=layout,
+            stage_name="era5_family_ablation",
+            config={
+                "feature_table_path": str(feature_table_path),
+                "train_end_year": base_config.train_end_year,
+                "valid_start_year": base_config.valid_start_year,
+                "valid_end_year": base_config.valid_end_year,
+                "n_estimators": base_config.n_estimators,
+                "keep": recommendation["keep"],
+                "drop": recommendation["drop"],
+            },
+            artifacts={
+                "comparison_json": str(comparison_json),
+                "comparison_csv": str(comparison_csv),
+                **{arm: str(ablation_root / arm / "metrics.json") for arm in arm_results},
+            },
+            summary={"arms": comparison_rows, "recommendation": recommendation},
+        )
+
+    return {
+        "comparison": comparison,
+        "table": table,
+        "comparison_json": comparison_json,
+        "comparison_csv": comparison_csv,
+        "arm_results": arm_results,
+        "recommendation": recommendation,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train a baseline monthly wildfire risk model")
     parser.add_argument("--features", required=True, help="Feature table CSV produced by build_features.py")
@@ -802,6 +1140,14 @@ def main() -> None:
         action="store_true",
         help="Train history-only, ERA5-only, and both on the same split. Writes ablation_comparison.csv.",
     )
+    parser.add_argument(
+        "--era5-family-ablation",
+        action="store_true",
+        help=(
+            "Drop temperature, precip, soil moisture, wind, and hot-dry one family at a time "
+            "from the full both model, then retrain with only the families that move PR-AUC/ROC."
+        ),
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
@@ -813,6 +1159,17 @@ def main() -> None:
         skip_yearly_backtest=args.skip_yearly_backtest,
         feature_set=args.feature_set,
     )
+    if args.era5_family_ablation:
+        results = run_era5_family_ablation(
+            feature_table_path=args.features,
+            model_dir=args.model_dir,
+            config=config,
+            run_root=args.run_root,
+            run_name=args.run_name,
+        )
+        print(results["table"])
+        print(json.dumps(results["comparison"], indent=2))
+        return
     if args.ablation:
         results = run_feature_ablation(
             feature_table_path=args.features,
