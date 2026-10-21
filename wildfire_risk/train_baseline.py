@@ -107,10 +107,25 @@ class TrainConfig:
     calibration_method: str = "isotonic"
 
 
-def read_feature_table(path: str | Path) -> pd.DataFrame:
-    df = pd.read_csv(path)
-    if "month" in df.columns:
-        df["month"] = pd.to_datetime(df["month"]).dt.to_period("M").astype(str)
+def _downcast_feature_chunk(chunk: pd.DataFrame) -> pd.DataFrame:
+    if "month" in chunk.columns:
+        chunk["month"] = pd.to_datetime(chunk["month"]).dt.to_period("M").astype(str)
+    float_cols = chunk.select_dtypes(include=["float64"]).columns
+    if len(float_cols):
+        chunk[float_cols] = chunk[float_cols].astype("float32")
+    for column in chunk.select_dtypes(include=["int64"]).columns:
+        chunk[column] = pd.to_numeric(chunk[column], downcast="integer")
+    return chunk
+
+
+def read_feature_table(path: str | Path, chunksize: int = 250_000) -> pd.DataFrame:
+    chunks = []
+    for index, chunk in enumerate(pd.read_csv(path, chunksize=chunksize), start=1):
+        chunks.append(_downcast_feature_chunk(chunk))
+        if index == 1 or index % 8 == 0:
+            LOGGER.info("Read %s feature-table chunks", index)
+    df = pd.concat(chunks, ignore_index=True)
+    del chunks
     return df
 
 
@@ -566,6 +581,9 @@ def train_baseline_models(
         list(config.keep_era5_families) if config.keep_era5_families is not None else "all",
     )
     train_df, valid_df = temporal_split(df, config=config)
+    if config.skip_yearly_backtest:
+        del df
+        df = None
     LOGGER.info(
         "Split train %s rows (%s-%s) / valid %s rows (%s-%s)",
         f"{len(train_df):,}",
