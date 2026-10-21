@@ -9,7 +9,7 @@ import pytest
 from wildfire_risk.build_features import build_feature_table
 from wildfire_risk.build_labels import build_label_table
 from wildfire_risk.build_predictor_table import build_predictor_table
-from wildfire_risk.download_external import firms_date_windows, modis_tiles_for_bbox
+from wildfire_risk.download_external import firms_date_windows, glue_negative_option_values, modis_tiles_for_bbox
 from wildfire_risk.grid import GridSpec, create_global_grid, create_month_index
 from wildfire_risk.convert_nasadem import (
     accumulate_terrain,
@@ -242,6 +242,11 @@ class WildfireRiskPipelineTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             modis_tiles_for_bbox("10,0,-10,5")
+
+        glued = glue_negative_option_values(
+            ["nasadem", "--bbox", "-130,25,-100,52", "--dest", "/tmp/nasadem"]
+        )
+        self.assertEqual(glued[1], "--bbox=-130,25,-100,52")
 
     def test_firms_windows_tile_the_requested_period_without_gaps(self) -> None:
         windows = list(firms_date_windows("2020-01", "2020-02"))

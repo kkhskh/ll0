@@ -674,8 +674,27 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def glue_negative_option_values(argv: list[str]) -> list[str]:
+    """Keep `--bbox -130,25,-100,52` from being parsed as an unknown flag."""
+    glued: list[str] = []
+    skip_next = False
+    for index, token in enumerate(argv):
+        if skip_next:
+            skip_next = False
+            continue
+        if token in {"--bbox", "--area"} and index + 1 < len(argv):
+            nxt = argv[index + 1]
+            if nxt.startswith("-") and not nxt.startswith("--"):
+                glued.append(f"{token}={nxt}")
+                skip_next = True
+                continue
+        glued.append(token)
+    return glued
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    raw = list(argv) if argv is not None else sys.argv[1:]
+    args = build_parser().parse_args(glue_negative_option_values(raw))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     try:
         return args.handler(args)
