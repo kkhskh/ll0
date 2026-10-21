@@ -174,6 +174,33 @@ python wildfire_risk/build_features.py \
   --run-name wildfire-risk-mvp-2020-2025-noleak-v4
 ```
 
+## NASADEM Terrain
+
+NASADEM is static elevation and slope. Do not download the global archive. Western North America
+(`-130,25,-100,52`) is the only region where this run can change the continent score.
+
+`convert_nasadem.py` reads `NASADEM_HGT` `.zip` / `.hgt` tiles and writes mean elevation, elevation
+std, mean slope, and `has_terrain` on the 0.5 degree grid. Cells outside the downloaded box stay
+unjoined and fill as zero, so Africa is not given fake sea-level terrain unless `has_terrain=1`.
+
+```bash
+python -m wildfire_risk.convert_nasadem \
+  --input datasets/wildfires/nasadem \
+  --stride 10 \
+  --run-root artifacts/wildfire_risk_runs \
+  --run-name wildfire-risk-mvp-2020-2025-noleak-v5
+```
+
+Then attach onto the v3 feature table (the working model; do not rebuild from labels):
+
+```bash
+python wildfire_risk/build_features.py \
+  --base-features artifacts/wildfire_risk_runs/wildfire-risk-mvp-2020-2025-noleak-v3/features/feature_table.csv \
+  --static-source artifacts/wildfire_risk_runs/wildfire-risk-mvp-2020-2025-noleak-v5/features/nasadem_terrain.csv:terrain \
+  --run-root artifacts/wildfire_risk_runs \
+  --run-name wildfire-risk-mvp-2020-2025-noleak-v5
+```
+
 ## Getting The Raw Sources
 
 `download_external.py` fetches the sources that are not on disk yet. It needs Earthdata Login
@@ -186,7 +213,7 @@ python wildfire_risk/download_external.py list
 python wildfire_risk/download_external.py gpw --years 2020 --resolution 2pt5_min
 python wildfire_risk/download_external.py groads --region global
 python wildfire_risk/download_external.py mcd12q1 --start-year 2019 --end-year 2024
-python wildfire_risk/download_external.py nasadem --bbox -125,32,-114,42
+python wildfire_risk/download_external.py nasadem --bbox -130,25,-100,52
 python wildfire_risk/download_external.py firms --start-month 2020-01 --end-month 2025-12
 ```
 

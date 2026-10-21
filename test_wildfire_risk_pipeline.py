@@ -11,6 +11,12 @@ from wildfire_risk.build_labels import build_label_table
 from wildfire_risk.build_predictor_table import build_predictor_table
 from wildfire_risk.download_external import firms_date_windows, modis_tiles_for_bbox
 from wildfire_risk.grid import GridSpec, create_global_grid, create_month_index
+from wildfire_risk.convert_nasadem import (
+    accumulate_terrain,
+    elevation_to_slope_deg,
+    parse_nasadem_tile_origin,
+    stats_to_rows,
+)
 from wildfire_risk.convert_mcd12q1 import (
     accumulate_igbp_counts,
     assign_feature_years,
@@ -472,6 +478,35 @@ class WildfireRiskPipelineTest(unittest.TestCase):
             self.assertTrue((tmp_path / "models" / "ablation" / "history" / "metrics.json").exists())
             self.assertFalse((tmp_path / "models" / "ablation" / "history" / "validation_predictions.csv").exists())
             self.assertFalse((tmp_path / "models" / "classifier.pkl").exists())
+
+    def test_nasadem_tile_name_and_slope_aggregate_to_half_degree_cells(self) -> None:
+        self.assertEqual(parse_nasadem_tile_origin("NASADEM_HGT_n38w119.zip"), (38.0, -119.0))
+        self.assertEqual(parse_nasadem_tile_origin("s16e012.hgt"), (-16.0, 12.0))
+
+        flat = np.full((9, 9), 1000.0)
+        ramp = np.tile(np.linspace(0.0, 80_000.0, 9), (9, 1))
+        flat_slope = elevation_to_slope_deg(flat, lat_south=38.0, stride=1)
+        ramp_slope = elevation_to_slope_deg(ramp, lat_south=38.0, stride=1)
+        self.assertLess(float(np.nanmean(flat_slope)), 1.0)
+        self.assertGreater(float(np.nanmean(ramp_slope)), float(np.nanmean(flat_slope)))
+
+        spec = GridSpec(resolution_deg=0.5)
+        stats: dict[str, np.ndarray] = {}
+        lats = np.full(4, 38.25)
+        lons = np.full(4, -118.75)
+        accumulate_terrain(
+            stats,
+            elev=np.array([1000.0, 1100.0, 1200.0, 1300.0]),
+            slope=np.array([2.0, 4.0, 6.0, 8.0]),
+            lats=lats,
+            lons=lons,
+            grid_spec=spec,
+        )
+        rows = stats_to_rows(stats)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["has_terrain"], 1)
+        self.assertAlmostEqual(rows[0]["elevation_mean_m"], 1150.0)
+        self.assertAlmostEqual(rows[0]["slope_mean_deg"], 5.0)
 
     def test_mcd12q1_aggregates_igbp_fractions_and_shifts_to_next_year(self) -> None:
         self.assertEqual(parse_mcd12q1_filename("MCD12Q1.A2023001.h27v12.061.2024233123456.hdf"), (2023, "h27v12"))
