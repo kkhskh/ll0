@@ -303,6 +303,75 @@ def build_feature_table(
     return features_df
 
 
+def attach_static_to_feature_table(
+    base_features_path: str | Path,
+    static_sources: Iterable[tuple[str, str]],
+    output_path: str | Path | None = None,
+    run_root: str | Path | None = None,
+    run_name: str | None = None,
+    output_name: str = "feature_table.csv",
+) -> pd.DataFrame:
+    """Join static/annual columns onto an already-built feature table.
+
+    Used when labels are gone but a previous feature table (for example v3) still exists.
+    Does not recompute history or ERA5 lags.
+    """
+    static_sources = list(static_sources)
+    if not static_sources:
+        raise ValueError("attach_static_to_feature_table needs at least one --static-source")
+
+    features_df = read_table(base_features_path)
+    required = {"cell_id", "year"}
+    missing = required - set(features_df.columns)
+    if missing:
+        raise ValueError(f"Feature table is missing required columns: {sorted(missing)}")
+
+    before_cols = set(features_df.columns)
+    features_df = merge_static_sources(features_df, static_sources=static_sources)
+    new_cols = [column for column in features_df.columns if column not in before_cols]
+    if not new_cols:
+        raise ValueError("Static sources did not add any new columns")
+
+    numeric_new = [column for column in new_cols if np.issubdtype(features_df[column].dtype, np.number)]
+    if numeric_new:
+        month_means = features_df.groupby("month_num")[numeric_new].transform("mean")
+        for column in numeric_new:
+            features_df[f"{column}_month_anom"] = features_df[column] - month_means[column]
+            new_cols.append(f"{column}_month_anom")
+        features_df[new_cols] = features_df[new_cols].fillna(0.0)
+        features_df = downcast_floats(features_df)
+
+    layout = None
+    if run_root is not None:
+        layout = create_run_layout(run_root, run_name=run_name)
+        output_path = layout.features_dir / output_name
+    elif output_path is None:
+        raise ValueError("Either output_path or run_root must be provided")
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    LOGGER.info("Writing %s with %s new columns", output_path, len(new_cols))
+    features_df.to_csv(output_path, index=False)
+
+    if layout is not None:
+        write_stage_manifest(
+            layout=layout,
+            stage_name="attach_static_features",
+            config={
+                "base_features_path": str(base_features_path),
+                "static_sources": [[str(path), prefix] for path, prefix in static_sources],
+                "output_name": output_name,
+            },
+            artifacts={"feature_table": str(output_path)},
+            summary={
+                "row_count": int(len(features_df)),
+                "column_count": int(features_df.shape[1]),
+                "new_columns": new_cols,
+            },
+        )
+    return features_df
+
+
 def parse_source_arguments(raw_values: list[str] | None) -> list[tuple[str, str]]:
     if not raw_values:
         return []
@@ -320,7 +389,11 @@ def parse_source_arguments(raw_values: list[str] | None) -> list[tuple[str, str]
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build a monthly wildfire risk feature table")
-    parser.add_argument("--labels", required=True, help="CSV created by build_labels.py")
+    parser.add_argument("--labels", help="CSV created by build_labels.py")
+    parser.add_argument(
+        "--base-features",
+        help="Existing feature table to attach static sources onto. Skips labels and does not rebuild lags.",
+    )
     parser.add_argument("--output", help="Where to write the feature table")
     parser.add_argument(
         "--dynamic-source",
@@ -347,16 +420,28 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
-    features = build_feature_table(
-        labels_path=args.labels,
-        output_path=args.output,
-        dynamic_sources=parse_source_arguments(args.dynamic_source),
-        static_sources=parse_source_arguments(args.static_source),
-        run_root=args.run_root,
-        run_name=args.run_name,
-        output_name=args.output_name,
-        restrict_to_dynamic_cells=not args.keep_all_cells,
-    )
+    if args.base_features:
+        features = attach_static_to_feature_table(
+            base_features_path=args.base_features,
+            static_sources=parse_source_arguments(args.static_source),
+            output_path=args.output,
+            run_root=args.run_root,
+            run_name=args.run_name,
+            output_name=args.output_name,
+        )
+    else:
+        if not args.labels:
+            raise ValueError("Provide --labels, or --base-features to attach static columns onto an existing table")
+        features = build_feature_table(
+            labels_path=args.labels,
+            output_path=args.output,
+            dynamic_sources=parse_source_arguments(args.dynamic_source),
+            static_sources=parse_source_arguments(args.static_source),
+            run_root=args.run_root,
+            run_name=args.run_name,
+            output_name=args.output_name,
+            restrict_to_dynamic_cells=not args.keep_all_cells,
+        )
     print(f"Built feature table with {len(features):,} rows and {features.shape[1]} columns")
 
 

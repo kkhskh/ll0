@@ -100,6 +100,11 @@ def iter_mcd12q1_files(
     end_year: int,
 ) -> dict[int, list[Path]]:
     folder = Path(input_path)
+    if not folder.exists():
+        raise FileNotFoundError(
+            f"MCD12Q1 folder does not exist: {folder}. "
+            "Download tiles first with `python -m wildfire_risk.download_external mcd12q1`."
+        )
     if not folder.is_dir():
         raise ValueError(f"MCD12Q1 input path must be a directory, got {folder}")
 
