@@ -11,6 +11,7 @@ from wildfire_risk.build_labels import build_label_table
 from wildfire_risk.build_predictor_table import build_predictor_table
 from wildfire_risk.download_external import firms_date_windows, glue_negative_option_values, modis_tiles_for_bbox
 from wildfire_risk.grid import GridSpec, create_global_grid, create_month_index
+from wildfire_risk.convert_gpw import aggregate_density_array, density_member_name
 from wildfire_risk.convert_nasadem import (
     accumulate_terrain,
     elevation_to_slope_deg,
@@ -483,6 +484,36 @@ class WildfireRiskPipelineTest(unittest.TestCase):
             self.assertTrue((tmp_path / "models" / "ablation" / "history" / "metrics.json").exists())
             self.assertFalse((tmp_path / "models" / "ablation" / "history" / "validation_predictions.csv").exists())
             self.assertFalse((tmp_path / "models" / "classifier.pkl").exists())
+
+    def test_gpw_density_means_land_on_half_degree_cells(self) -> None:
+        names = [
+            "gpw_v4_data_quality_rev11_2020_2pt5_min.tif",
+            "gpw_v4_population_density_rev11_2020_2pt5_min.tif",
+        ]
+        self.assertTrue(density_member_name(names).startswith("gpw_v4_population_density"))
+
+        values = np.array(
+            [
+                [10.0, 30.0, -9999.0, 0.0],
+                [10.0, 30.0, 5.0, 5.0],
+                [100.0, 300.0, 1.0, 3.0],
+                [100.0, 300.0, 1.0, 3.0],
+            ]
+        )
+        table = aggregate_density_array(
+            values,
+            lat_north=1.0,
+            lon_west=0.0,
+            pixel_height_deg=0.25,
+            pixel_width_deg=0.25,
+            grid_spec=GridSpec(resolution_deg=0.5),
+            nodata=-9999.0,
+        )
+        by_cell = {row.cell_id: row for row in table.itertuples(index=False)}
+        self.assertAlmostEqual(by_cell["181_360"].population_density, 20.0)
+        self.assertEqual(by_cell["181_361"].population_valid_pixel_count, 3)
+        self.assertAlmostEqual(by_cell["180_360"].population_density, 200.0)
+        self.assertEqual(feature_family("population_density"), "population")
 
     def test_nasadem_tile_name_and_slope_aggregate_to_half_degree_cells(self) -> None:
         self.assertEqual(parse_nasadem_tile_origin("NASADEM_HGT_n38w119.zip"), (38.0, -119.0))

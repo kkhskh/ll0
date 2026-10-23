@@ -201,6 +201,21 @@ python wildfire_risk/build_features.py \
   --run-name wildfire-risk-mvp-2020-2025-noleak-v5
 ```
 
+## GPWv4 Population
+
+Use the 2020 population-density snapshot at 2.5 arc minutes. It is one zip, about 50 MB.
+The 2020 map is joined as a static column on every month from 2020 through 2025.
+
+```bash
+python -m wildfire_risk.download_external gpw --years 2020 --resolution 2pt5_min
+python -m wildfire_risk.convert_gpw \
+  --input datasets/wildfires/gpw \
+  --run-root artifacts/wildfire_risk_runs \
+  --run-name wildfire-risk-mvp-2020-2025-noleak-v6
+```
+
+Attach onto the v3 feature table and write the big CSV on local disk before copying it to Drive.
+
 ## Getting The Raw Sources
 
 `download_external.py` fetches the sources that are not on disk yet. It needs Earthdata Login
