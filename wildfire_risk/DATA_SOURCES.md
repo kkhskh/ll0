@@ -33,7 +33,7 @@ Reference URLs:
 | `MCD12Q1` | Not on Drive yet. CMR lists ~1890 global tiles for 2019-2024. Needs Earthdata credentials. | Converter ready; table not built |
 | `NASADEM` | Not on Drive yet. Download western NA only (`--bbox -130,25,-100,52`). | Converter ready; table not built |
 | `GPWv4` | Not downloaded yet. One 2020 2.5-arc-minute density zip. | Converter ready |
-| `gROADS` | No | No |
+| `gROADS` | Not downloaded yet. One global geodatabase zip, about 196 MB. | Converter ready |
 
 Use `download_external.py` to fetch the five outstanding sources. It resolves granules through
 NASA's CMR API, so the collection concept IDs stay correct as new revisions are published:

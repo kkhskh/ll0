@@ -92,7 +92,7 @@ COLLECTIONS: dict[str, CollectionSpec] = {
         short_name="CIESIN_SEDAC_GROADS_V1",
         version="1.0",
         description="gROADSv1 road vectors, one geodatabase zip per region",
-        granule_estimate="about 700 MB for the global geodatabase",
+        granule_estimate="about 196 MB for the global geodatabase",
     ),
 }
 

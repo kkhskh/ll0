@@ -12,6 +12,7 @@ from wildfire_risk.build_predictor_table import build_predictor_table
 from wildfire_risk.download_external import firms_date_windows, glue_negative_option_values, modis_tiles_for_bbox
 from wildfire_risk.grid import GridSpec, create_global_grid, create_month_index
 from wildfire_risk.convert_gpw import aggregate_density_array, density_member_name
+from wildfire_risk.convert_groads import accumulate_road_lines
 from wildfire_risk.convert_nasadem import (
     accumulate_terrain,
     elevation_to_slope_deg,
@@ -514,6 +515,33 @@ class WildfireRiskPipelineTest(unittest.TestCase):
         self.assertEqual(by_cell["181_361"].population_valid_pixel_count, 3)
         self.assertAlmostEqual(by_cell["180_360"].population_density, 200.0)
         self.assertEqual(feature_family("population_density"), "population")
+
+    def test_groads_length_lands_on_half_degree_cells(self) -> None:
+        from wildfire_risk.grid import EARTH_RADIUS_KM, approximate_cell_area_km2
+
+        grid = GridSpec(resolution_deg=0.5)
+        inside = accumulate_road_lines(
+            [(np.array([0.25, 0.25]), np.array([0.1, 0.4]))],
+            grid,
+            step_deg=0.1,
+        )
+        by_cell = {row.cell_id: row for row in inside.itertuples(index=False)}
+        expected_km = EARTH_RADIUS_KM * np.deg2rad(0.3)
+        self.assertEqual(list(by_cell), ["180_360"])
+        self.assertAlmostEqual(by_cell["180_360"].roads_length_km, expected_km, places=6)
+        area = float(approximate_cell_area_km2(np.array([0.25]), 0.5)[0])
+        self.assertAlmostEqual(by_cell["180_360"].roads_density_km_per_km2, expected_km / area, places=6)
+
+        crossing = accumulate_road_lines(
+            [(np.array([0.4, 0.6]), np.array([0.25, 0.25]))],
+            grid,
+            step_deg=0.05,
+        )
+        crossed = {row.cell_id: row.roads_length_km for row in crossing.itertuples(index=False)}
+        half = EARTH_RADIUS_KM * np.deg2rad(0.2) * np.cos(np.deg2rad(0.25)) / 2.0
+        self.assertAlmostEqual(crossed["180_360"], half, places=5)
+        self.assertAlmostEqual(crossed["180_361"], half, places=5)
+        self.assertEqual(feature_family("roads_density_km_per_km2"), "roads")
 
     def test_nasadem_tile_name_and_slope_aggregate_to_half_degree_cells(self) -> None:
         self.assertEqual(parse_nasadem_tile_origin("NASADEM_HGT_n38w119.zip"), (38.0, -119.0))

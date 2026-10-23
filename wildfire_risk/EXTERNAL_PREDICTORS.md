@@ -216,6 +216,20 @@ python -m wildfire_risk.convert_gpw \
 
 Attach onto the v3 feature table and write the big CSV on local disk before copying it to Drive.
 
+## gROADS
+
+Use the global geodatabase, one zip of about 196 MB. It is a static road map, joined onto every month from 2020 through 2025 as kilometers of road per cell.
+
+```bash
+python -m wildfire_risk.download_external groads --region global
+python -m wildfire_risk.convert_groads \
+  --input datasets/wildfires/groads \
+  --run-root artifacts/wildfire_risk_runs \
+  --run-name wildfire-risk-mvp-2020-2025-noleak-v7
+```
+
+Reading the geodatabase needs `fiona` (`pip install fiona`). Attach onto the v3 feature table and write the big CSV on local disk before copying it to Drive.
+
 ## Getting The Raw Sources
 
 `download_external.py` fetches the sources that are not on disk yet. It needs Earthdata Login
