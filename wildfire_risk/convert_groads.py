@@ -205,23 +205,50 @@ def find_groads_input(input_path: str | Path) -> Path:
     return global_gdb[0] if global_gdb else candidates[0]
 
 
+def gdb_directories(names: list[str]) -> list[str]:
+    """Return geodatabase paths inside a zip, including nested and Windows-style names."""
+    found: list[str] = []
+    normalized = [name.replace("\\", "/") for name in names]
+    for name in normalized:
+        parts = [part for part in name.split("/") if part and part not in (".", "..")]
+        for index, part in enumerate(parts):
+            if part.lower().endswith(".gdb"):
+                gdb = "/".join(parts[: index + 1])
+                if gdb not in found:
+                    found.append(gdb)
+    if found:
+        return found
+    parents: list[str] = []
+    for name in normalized:
+        if not name.lower().endswith(".gdbtable") or "/" not in name:
+            continue
+        parent = name.rsplit("/", 1)[0]
+        if parent not in parents:
+            parents.append(parent)
+    return parents
+
+
 def extract_gdb(zip_path: Path) -> Path:
     with zipfile.ZipFile(zip_path) as archive:
-        roots = []
-        for name in archive.namelist():
-            root = name.split("/")[0]
-            if root.endswith(".gdb") and root not in roots:
-                roots.append(root)
-        if not roots:
-            raise ValueError(f"No .gdb directory inside {zip_path}")
-        gdb_name = next((name for name in roots if "global" in name.lower()), roots[0])
+        names = archive.namelist()
+        gdbs = gdb_directories(names)
+        if not gdbs:
+            sample = ", ".join(name.replace("\\", "/") for name in names[:8]) or "(empty zip)"
+            raise ValueError(f"No .gdb directory inside {zip_path}. First entries: {sample}")
+        gdb_name = next((name for name in gdbs if "global" in name.lower()), gdbs[0])
         dest_root = Path("/content") if Path("/content").is_dir() else zip_path.parent
         dest = dest_root / gdb_name
         if dest.is_dir() and any(dest.glob("*.gdbtable")):
             LOGGER.info("Using extracted geodatabase %s", dest)
             return dest
         LOGGER.info("Extracting %s to %s", zip_path.name, dest)
-        archive.extractall(dest_root)
+        prefix = gdb_name.rstrip("/") + "/"
+        for info in archive.infolist():
+            member = info.filename.replace("\\", "/")
+            if member != gdb_name and not member.startswith(prefix):
+                continue
+            info.filename = member
+            archive.extract(info, dest_root)
     if not dest.is_dir():
         raise FileNotFoundError(f"Expected geodatabase at {dest} after extracting {zip_path}")
     return dest

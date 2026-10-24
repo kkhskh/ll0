@@ -12,7 +12,7 @@ from wildfire_risk.build_predictor_table import build_predictor_table
 from wildfire_risk.download_external import firms_date_windows, glue_negative_option_values, modis_tiles_for_bbox
 from wildfire_risk.grid import GridSpec, create_global_grid, create_month_index
 from wildfire_risk.convert_gpw import aggregate_density_array, density_member_name
-from wildfire_risk.convert_groads import accumulate_road_lines
+from wildfire_risk.convert_groads import accumulate_road_lines, extract_gdb, gdb_directories
 from wildfire_risk.convert_nasadem import (
     accumulate_terrain,
     elevation_to_slope_deg,
@@ -542,6 +542,25 @@ class WildfireRiskPipelineTest(unittest.TestCase):
         self.assertAlmostEqual(crossed["180_360"], half, places=5)
         self.assertAlmostEqual(crossed["180_361"], half, places=5)
         self.assertEqual(feature_family("roads_density_km_per_km2"), "roads")
+
+    def test_groads_zip_finds_nested_geodatabase(self) -> None:
+        names = [
+            "groads-v1-global-gdb/readme.txt",
+            "groads-v1-global-gdb/gROADS-v1-global.gdb/a00000001.gdbtable",
+        ]
+        self.assertEqual(gdb_directories(names), ["groads-v1-global-gdb/gROADS-v1-global.gdb"])
+        windows = [r"gROADS-v1-global.gdb\a00000001.gdbtable"]
+        self.assertEqual(gdb_directories(windows), ["gROADS-v1-global.gdb"])
+
+        import zipfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            zip_path = Path(tmp) / "groads-v1-global-gdb.zip"
+            with zipfile.ZipFile(zip_path, "w") as archive:
+                archive.writestr("groads-v1-global-gdb/gROADS-v1-global.gdb/a00000001.gdbtable", b"x")
+            gdb = extract_gdb(zip_path)
+            self.assertTrue((gdb / "a00000001.gdbtable").is_file())
+            self.assertTrue(gdb.name.endswith(".gdb"))
 
     def test_nasadem_tile_name_and_slope_aggregate_to_half_degree_cells(self) -> None:
         self.assertEqual(parse_nasadem_tile_origin("NASADEM_HGT_n38w119.zip"), (38.0, -119.0))
