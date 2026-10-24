@@ -230,6 +230,26 @@ python -m wildfire_risk.convert_groads \
 
 Reading the geodatabase needs `fiona` (`pip install fiona`). Attach onto the v3 feature table and write the big CSV on local disk before copying it to Drive.
 
+## FIRMS
+
+Download MODIS standard-quality detections from 2019-01 through 2025-12. 2019 is only there so 2020 has a real prior year. The converter keeps confidence of at least 30 and vegetation fires (`type` 0), then counts them on the 0.5° grid.
+
+The feature join uses the previous month and the mean of the previous 12 months. The same month is dropped. Same-month FIRMS is almost the burned-area label.
+
+```bash
+python -m wildfire_risk.download_external firms --start-month 2019-01 --end-month 2025-12
+python -m wildfire_risk.convert_firms \
+  --input datasets/wildfires/firms \
+  --run-root artifacts/wildfire_risk_runs \
+  --run-name wildfire-risk-mvp-2020-2025-noleak-v8
+python wildfire_risk/build_features.py \
+  --base-features artifacts/wildfire_risk_runs/wildfire-risk-mvp-2020-2025-noleak-v3/features/feature_table.csv \
+  --dynamic-source artifacts/wildfire_risk_runs/wildfire-risk-mvp-2020-2025-noleak-v8/features/firms_monthly.csv:firms \
+  --output /tmp/feature_table_v8.csv
+```
+
+Write the big CSV on local disk before copying it to Drive.
+
 ## Getting The Raw Sources
 
 `download_external.py` fetches the sources that are not on disk yet. It needs Earthdata Login

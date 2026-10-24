@@ -6,12 +6,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from wildfire_risk.build_features import build_feature_table
+from wildfire_risk.build_features import build_feature_table, lagged_dynamic_columns
 from wildfire_risk.build_labels import build_label_table
 from wildfire_risk.build_predictor_table import build_predictor_table
 from wildfire_risk.download_external import firms_date_windows, glue_negative_option_values, modis_tiles_for_bbox
 from wildfire_risk.grid import GridSpec, create_global_grid, create_month_index
 from wildfire_risk.convert_gpw import aggregate_density_array, density_member_name
+from wildfire_risk.convert_firms import aggregate_detections
 from wildfire_risk.convert_groads import accumulate_road_lines, extract_gdb, gdb_directories
 from wildfire_risk.convert_nasadem import (
     accumulate_terrain,
@@ -561,6 +562,49 @@ class WildfireRiskPipelineTest(unittest.TestCase):
             gdb = extract_gdb(zip_path)
             self.assertTrue((gdb / "a00000001.gdbtable").is_file())
             self.assertTrue(gdb.name.endswith(".gdb"))
+
+    def test_firms_lags_use_prior_months_only(self) -> None:
+        detections = pd.DataFrame(
+            {
+                "latitude": [0.25, 0.30, 0.25, 0.25, 0.25],
+                "longitude": [0.25, 0.30, 0.25, 0.25, 0.80],
+                "acq_date": ["2020-01-15", "2020-01-16", "2020-01-17", "2020-01-18", "2020-02-01"],
+                "confidence": [80, 90, 10, 80, 80],
+                "type": [0, 0, 0, 2, 0],
+                "frp": [10.0, 5.0, 100.0, 50.0, 7.0],
+            }
+        )
+        monthly = aggregate_detections(detections, GridSpec(resolution_deg=0.5))
+        by_key = {(row.cell_id, row.month): row for row in monthly.itertuples(index=False)}
+        self.assertEqual(by_key[("180_360", "2020-01")].detection_count, 2)
+        self.assertAlmostEqual(by_key[("180_360", "2020-01")].frp_sum, 15.0)
+        self.assertEqual(by_key[("180_361", "2020-02")].detection_count, 1)
+
+        panel = pd.DataFrame(
+            {
+                "cell_id": ["180_360", "180_360"],
+                "month": ["2020-01", "2020-02"],
+                "year": [2020, 2020],
+                "month_num": [1, 2],
+            }
+        )
+        history = pd.DataFrame(
+            {
+                "cell_id": ["180_360", "180_360", "180_360"],
+                "month": ["2019-12", "2020-01", "2020-02"],
+                "detection_count": [6, 4, 10],
+                "frp_sum": [1.0, 2.0, 3.0],
+            }
+        )
+        lagged, columns = lagged_dynamic_columns(panel, history, prefix="firms", lookback_months=12)
+        by_month = {row.month: row for row in lagged.itertuples(index=False)}
+        self.assertNotIn("firms_detection_count", columns)
+        self.assertEqual(by_month["2020-01"].firms_detection_count_lag_1, 6.0)
+        self.assertAlmostEqual(by_month["2020-01"].firms_detection_count_rollmean_12, 0.5)
+        self.assertEqual(by_month["2020-02"].firms_detection_count_lag_1, 4.0)
+        self.assertAlmostEqual(by_month["2020-02"].firms_detection_count_rollmean_12, 10.0 / 12.0)
+        self.assertAlmostEqual(by_month["2020-02"].firms_detection_log_lag_1, np.log1p(4.0))
+        self.assertEqual(feature_family("firms_detection_count_lag_1"), "firms")
 
     def test_nasadem_tile_name_and_slope_aggregate_to_half_degree_cells(self) -> None:
         self.assertEqual(parse_nasadem_tile_origin("NASADEM_HGT_n38w119.zip"), (38.0, -119.0))

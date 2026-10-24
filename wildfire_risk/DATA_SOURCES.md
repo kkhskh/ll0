@@ -29,7 +29,7 @@ Reference URLs:
 |---|---|---|
 | `MCD64A1` | Yes, 19832 HDF tiles for `2020-01` to `2026-02` in `datasets/wildfires/mcd64a1` | Not built. See `MCD64A1_INGESTION.md` |
 | `ERA5-Land` | Yes, `datasets/wildfires/era5_land/b09a78a9a0989d1946e3597dbfbc11ca.nc`, global `0.1` degree monthly means for `2020-01` to `2025-12` | Yes, `datasets/wildfires/era5_land/era5_land_predictors_2020_2025.csv` |
-| `NASA FIRMS` | No | No |
+| `NASA FIRMS` | Not downloaded yet. Area API, MODIS_SP, 2019-01 through 2025-12. Needs a FIRMS map key. | Converter ready. Joined as prior-month lags only |
 | `MCD12Q1` | Not on Drive yet. CMR lists ~1890 global tiles for 2019-2024. Needs Earthdata credentials. | Converter ready; table not built |
 | `NASADEM` | Not on Drive yet. Download western NA only (`--bbox -130,25,-100,52`). | Converter ready; table not built |
 | `GPWv4` | Not downloaded yet. One 2020 2.5-arc-minute density zip. | Converter ready |
