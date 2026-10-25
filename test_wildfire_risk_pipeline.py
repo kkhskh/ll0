@@ -38,8 +38,10 @@ from wildfire_risk.train_baseline import (
     fit_probability_calibrator,
     run_era5_family_ablation,
     run_feature_ablation,
+    run_yearly_backtest,
     select_feature_columns,
     train_baseline_models,
+    yearly_backtest,
 )
 
 
@@ -858,6 +860,67 @@ class WildfireRiskPipelineTest(unittest.TestCase):
             self.assertTrue((tmp_path / "models" / "era5_family_ablation.csv").exists())
             self.assertIn("keep", ablation["recommendation"])
             self.assertIn("drop", ablation["recommendation"])
+
+    def test_yearly_backtest_refits_years_before_the_holdout_window(self) -> None:
+        rows = []
+        for year in (2020, 2021, 2022, 2023):
+            for month in range(1, 5):
+                rows.append(
+                    {
+                        "year": year,
+                        "month_num": month,
+                        "lat_center": -25.0,
+                        "lon_center": 133.0,
+                        "binary_risk_label": 1 if month == 1 else 0,
+                        "burned_fraction_lag_1": 1.0 if month == 1 else 0.0,
+                    }
+                )
+                rows.append(
+                    {
+                        "year": year,
+                        "month_num": month,
+                        "lat_center": 0.0,
+                        "lon_center": 20.0,
+                        "binary_risk_label": 0,
+                        "burned_fraction_lag_1": 0.0,
+                    }
+                )
+        frame = pd.DataFrame(rows)
+        config = TrainConfig(
+            train_end_year=2023,
+            valid_start_year=2024,
+            valid_end_year=2025,
+            backtest_start_year=2022,
+            backtest_end_year=2023,
+            n_estimators=5,
+        )
+        scores = yearly_backtest(frame, ["burned_fraction_lag_1"], config)
+        self.assertEqual(list(scores), ["2022", "2023"])
+        self.assertEqual(scores["2022"]["n_train_rows"], 16)
+        self.assertEqual(scores["2022"]["train_year_max"], 2021)
+        self.assertEqual(scores["2022"]["n_test_rows"], 8)
+        self.assertEqual(scores["2023"]["n_train_rows"], 24)
+        self.assertEqual(scores["2023"]["train_year_max"], 2022)
+        regions = {row["region"] for row in scores["2022"]["regions"]}
+        self.assertIn("global", regions)
+        self.assertIn("australia", regions)
+        self.assertIn("africa", regions)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            features_path = tmp_path / "features.csv"
+            frame.to_csv(features_path, index=False)
+            results = run_yearly_backtest(
+                feature_table_path=features_path,
+                config=config,
+                model_dir=tmp_path / "reports",
+            )
+            self.assertTrue(results["json_path"].exists())
+            self.assertTrue(results["csv_path"].exists())
+            self.assertFalse((tmp_path / "reports" / "classifier.pkl").exists())
+            written = pd.read_csv(results["csv_path"])
+            self.assertEqual(set(written["year"]), {2022, 2023})
+            self.assertIn("australia", set(written["region"]))
 
 
 if __name__ == "__main__":

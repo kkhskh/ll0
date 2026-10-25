@@ -106,4 +106,4 @@ v3 remains the working model: burn history plus ERA5 without wind. Land cover, t
 
 The v4–v7 artifacts stay on Drive under `runs/wildfire-risk-mvp-2020-2025-noleak-v4` through `v7`. They are recorded negative results.
 
-Set 3 is FIRMS, as a lagged ignition density on v3. Same-month detections stay out of the features, because they are almost the burned-area label. The converter keeps the previous month and the previous 12-month mean. That run has not been trained.
+Set 3 added lagged FIRMS onto v3 and kept it. The working model is v8. Same-month detections stay out of the features. Set 4 refits v8 once per year, from 2022 through 2025, and writes that table separately. See SET4_RESULTS.md.

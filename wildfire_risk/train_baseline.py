@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import importlib
 import json
 import logging
@@ -27,6 +28,7 @@ try:
         ranking_stability,
         regression_metrics,
         save_metrics,
+        score_continents,
     )
 except ImportError:  # pragma: no cover - allows direct script execution
     from evaluate import (
@@ -38,6 +40,7 @@ except ImportError:  # pragma: no cover - allows direct script execution
         ranking_stability,
         regression_metrics,
         save_metrics,
+        score_continents,
     )
 try:
     from .run_artifacts import create_run_layout, write_json, write_stage_manifest
@@ -103,6 +106,8 @@ class TrainConfig:
     random_state: int = 42
     n_estimators: int = 100
     skip_yearly_backtest: bool = False
+    backtest_start_year: int | None = None
+    backtest_end_year: int | None = None
     skip_regressor: bool = False
     feature_set: str = "both"
     dynamic_prefixes: tuple[str, ...] = DEFAULT_DYNAMIC_PREFIXES
@@ -462,25 +467,285 @@ def fit_models(
     }
 
 
+YEARLY_REGION_FIELDS = (
+    "region",
+    "n_rows",
+    "n_fires",
+    "fire_rate",
+    "roc_auc",
+    "pr_auc",
+    "precision_top_10pct",
+    "capture_top_10pct",
+)
+
+
+def _backtest_year_window(config: TrainConfig) -> tuple[int, int]:
+    start_year = config.valid_start_year if config.backtest_start_year is None else config.backtest_start_year
+    end_year = config.valid_end_year if config.backtest_end_year is None else config.backtest_end_year
+    if start_year > end_year:
+        raise ValueError(f"Backtest window {start_year}-{end_year} is empty")
+    return start_year, end_year
+
+
+def _slim_region_rows(frame: pd.DataFrame) -> list[dict[str, Any]]:
+    summaries = []
+    for row in score_continents(frame):
+        summaries.append({field: row[field] for field in YEARLY_REGION_FIELDS})
+    return summaries
+
+
+def format_yearly_backtest_table(yearly_scores: dict[str, dict[str, Any]]) -> str:
+    headers = ("year",) + YEARLY_REGION_FIELDS
+    widths = {header: len(header) for header in headers}
+    rendered: list[dict[str, str]] = []
+    for year, payload in yearly_scores.items():
+        for region in payload["regions"]:
+            rendered_row = {"year": str(year)}
+            for header in YEARLY_REGION_FIELDS:
+                value = region[header]
+                if header in {"n_rows", "n_fires"}:
+                    text = f"{int(value):,}"
+                elif isinstance(value, float):
+                    text = f"{value:.4f}"
+                else:
+                    text = str(value)
+                rendered_row[header] = text
+            rendered.append(rendered_row)
+            for header, text in rendered_row.items():
+                widths[header] = max(widths[header], len(text))
+
+    def fmt(row: dict[str, str]) -> str:
+        return "  ".join(row[header].ljust(widths[header]) for header in headers)
+
+    header_row = {header: header for header in headers}
+    return fmt(header_row) + "\n" + "\n".join(fmt(row) for row in rendered)
+
+
 def yearly_backtest(
     df: pd.DataFrame,
     feature_columns: list[str],
     config: TrainConfig,
-) -> dict[str, dict[str, float]]:
-    yearly_scores: dict[str, dict[str, float]] = {}
-    LOGGER.info("Starting yearly backtest %s to %s", config.valid_start_year, config.valid_end_year)
-    for year in range(config.valid_start_year, config.valid_end_year + 1):
-        train_df = df[df["year"] < year].copy()
-        test_df = df[df["year"] == year].copy()
-        if train_df.empty or test_df.empty:
+    on_year: Any = None,
+) -> dict[str, dict[str, Any]]:
+    """Refit once per test year on every earlier year. The test year is not in that fit."""
+    start_year, end_year = _backtest_year_window(config)
+    required = {"year", "binary_risk_label", "lat_center", "lon_center"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Yearly backtest is missing required columns: {sorted(missing)}")
+
+    yearly_scores: dict[str, dict[str, Any]] = {}
+    years = df["year"].to_numpy(dtype=int)
+    labels = df["binary_risk_label"].to_numpy()
+    latitudes = df["lat_center"].to_numpy()
+    longitudes = df["lon_center"].to_numpy()
+    features = df[feature_columns].to_numpy(dtype=np.float32)
+    del df
+    gc.collect()
+    LOGGER.info(
+        "Starting yearly backtest %s to %s (%s features). Each year is trained on earlier years only.",
+        start_year,
+        end_year,
+        len(feature_columns),
+    )
+    for year in range(start_year, end_year + 1):
+        train_idx = np.flatnonzero(years < year)
+        test_idx = np.flatnonzero(years == year)
+        if train_idx.size == 0 or test_idx.size == 0:
+            LOGGER.info(
+                "Yearly backtest %s skipped: train %s rows, test %s rows",
+                year,
+                f"{train_idx.size:,}",
+                f"{test_idx.size:,}",
+            )
             continue
 
-        LOGGER.info("Yearly backtest %s: train %s rows, test %s rows", year, f"{len(train_df):,}", f"{len(test_df):,}")
+        LOGGER.info(
+            "Yearly backtest %s: train %s rows (%s-%s), test %s rows",
+            year,
+            f"{train_idx.size:,}",
+            int(years[train_idx].min()),
+            int(years[train_idx].max()),
+            f"{test_idx.size:,}",
+        )
         _, classifier, _ = make_model_pair(config)
-        classifier = fit_classifier(classifier, train_df[feature_columns], train_df["binary_risk_label"])
-        y_prob = classifier.predict_proba(test_df[feature_columns])[:, 1]
-        yearly_scores[str(year)] = classification_metrics(test_df["binary_risk_label"], y_prob)
+        classifier = fit_classifier(
+            classifier,
+            features[train_idx],
+            pd.Series(labels[train_idx]),
+        )
+        scores = classifier.predict_proba(features[test_idx])[:, 1]
+        test_frame = pd.DataFrame(
+            {
+                "lat_center": latitudes[test_idx],
+                "lon_center": longitudes[test_idx],
+                "binary_risk_label": labels[test_idx],
+                "ranking_score": scores,
+            }
+        )
+        regions = _slim_region_rows(test_frame)
+        global_row = next(region for region in regions if region["region"] == "global")
+        yearly_scores[str(year)] = {
+            "n_train_rows": int(train_idx.size),
+            "n_test_rows": int(test_idx.size),
+            "train_year_min": int(years[train_idx].min()),
+            "train_year_max": int(years[train_idx].max()),
+            "roc_auc": global_row["roc_auc"],
+            "pr_auc": global_row["pr_auc"],
+            "precision_top_10pct": global_row["precision_top_10pct"],
+            "capture_top_10pct": global_row["capture_top_10pct"],
+            "regions": regions,
+        }
+        LOGGER.info(
+            "Yearly backtest %s global ROC %.4f PR %.4f capture@10%% %.4f",
+            year,
+            global_row["roc_auc"],
+            global_row["pr_auc"],
+            global_row["capture_top_10pct"],
+        )
+        del classifier, test_frame, scores
+        if on_year is not None:
+            on_year(yearly_scores)
     return yearly_scores
+
+
+def _null_nan(value: Any) -> Any:
+    if isinstance(value, float) and np.isnan(value):
+        return None
+    if isinstance(value, dict):
+        return {key: _null_nan(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_null_nan(item) for item in value]
+    return value
+
+
+def _yearly_backtest_payload(
+    yearly_scores: dict[str, dict[str, Any]],
+    feature_table_path: str | Path,
+    feature_columns: list[str],
+    config: TrainConfig,
+) -> dict[str, Any]:
+    start_year, end_year = _backtest_year_window(config)
+    return _null_nan(
+        {
+            "feature_table_path": str(feature_table_path),
+            "backtest_start_year": start_year,
+            "backtest_end_year": end_year,
+            "n_features": len(feature_columns),
+            "drop_era5_families": list(config.drop_era5_families),
+            "score": "raw ranking probability, the same role as ranking_score",
+            "note": (
+                "Each test year is a new fit on every earlier year in the table. "
+                "The v8 holdout model is a separate fit on 2020-2023 scored on 2024-2025."
+            ),
+            "years": yearly_scores,
+        }
+    )
+
+
+def _write_yearly_backtest_files(
+    yearly_scores: dict[str, dict[str, Any]],
+    feature_table_path: str | Path,
+    feature_columns: list[str],
+    config: TrainConfig,
+    json_path: Path,
+    csv_path: Path,
+) -> None:
+    save_metrics(
+        _yearly_backtest_payload(yearly_scores, feature_table_path, feature_columns, config),
+        json_path,
+    )
+    rows: list[dict[str, Any]] = []
+    for year, payload in yearly_scores.items():
+        for region in payload["regions"]:
+            rows.append(
+                {
+                    "year": int(year),
+                    "n_train_rows": payload["n_train_rows"],
+                    "train_year_min": payload["train_year_min"],
+                    "train_year_max": payload["train_year_max"],
+                    **region,
+                }
+            )
+    pd.DataFrame(rows).to_csv(csv_path, index=False)
+
+
+def run_yearly_backtest(
+    feature_table_path: str | Path,
+    config: TrainConfig = TrainConfig(),
+    run_root: str | Path | None = None,
+    run_name: str | None = None,
+    model_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """Score 2022-2025 (or the configured window) without replacing the holdout model."""
+    LOGGER.info("Reading feature table %s", feature_table_path)
+    loaded = {"table": read_feature_table(feature_table_path)}
+    LOGGER.info("Loaded %s rows x %s cols", f"{len(loaded['table']):,}", loaded["table"].shape[1])
+    feature_columns = select_feature_columns(
+        loaded["table"],
+        feature_set=config.feature_set,
+        dynamic_prefixes=config.dynamic_prefixes,
+        drop_era5_families=config.drop_era5_families,
+        keep_era5_families=config.keep_era5_families,
+    )
+    LOGGER.info(
+        "Feature set %s: %s columns (drop_era5=%s)",
+        config.feature_set,
+        len(feature_columns),
+        list(config.drop_era5_families) or "none",
+    )
+
+    layout = None
+    if run_root is not None:
+        layout = create_run_layout(run_root, run_name=run_name)
+        output_dir = layout.reports_dir
+    elif model_dir is not None:
+        output_dir = Path(model_dir)
+    else:
+        raise ValueError("Either model_dir or run_root must be provided")
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "yearly_backtest.json"
+    csv_path = output_dir / "yearly_backtest.csv"
+
+    def persist(yearly_scores: dict[str, dict[str, Any]]) -> None:
+        _write_yearly_backtest_files(
+            yearly_scores,
+            feature_table_path,
+            feature_columns,
+            config,
+            json_path,
+            csv_path,
+        )
+
+    yearly_scores = yearly_backtest(loaded.pop("table"), feature_columns, config=config, on_year=persist)
+    if not yearly_scores:
+        raise ValueError("Yearly backtest produced no years. Check the year window against the feature table.")
+    persist(yearly_scores)
+    table = format_yearly_backtest_table(yearly_scores)
+    LOGGER.info("Yearly backtest:\n%s", table)
+
+    if layout is not None:
+        write_stage_manifest(
+            layout=layout,
+            stage_name="yearly_backtest",
+            config={
+                "feature_table_path": str(feature_table_path),
+                "backtest_start_year": config.backtest_start_year,
+                "backtest_end_year": config.backtest_end_year,
+                "n_estimators": config.n_estimators,
+                "drop_era5_families": list(config.drop_era5_families),
+            },
+            artifacts={"yearly_backtest_json": str(json_path), "yearly_backtest_csv": str(csv_path)},
+            summary={"years": list(yearly_scores)},
+        )
+    return {
+        "years": yearly_scores,
+        "table": table,
+        "json_path": json_path,
+        "csv_path": csv_path,
+        "feature_columns": feature_columns,
+    }
 
 
 def summarize_feature_importance(
@@ -1193,7 +1458,24 @@ def main() -> None:
     parser.add_argument(
         "--skip-yearly-backtest",
         action="store_true",
-        help="Skip refitting a new model for every validation year. Those extra fits are what Colab kills.",
+        help="Skip the per-year refit during a holdout training run.",
+    )
+    parser.add_argument(
+        "--yearly-backtest-only",
+        action="store_true",
+        help=(
+            "Refit once per year and write continent scores. Does not train or replace the holdout model."
+        ),
+    )
+    parser.add_argument(
+        "--backtest-start-year",
+        type=int,
+        help="First test year. Training uses every earlier year in the table. Set 4 uses 2022.",
+    )
+    parser.add_argument(
+        "--backtest-end-year",
+        type=int,
+        help="Last test year. Set 4 uses 2025.",
     )
     parser.add_argument(
         "--feature-set",
@@ -1246,11 +1528,26 @@ def main() -> None:
         valid_end_year=args.valid_end_year,
         n_estimators=args.n_estimators,
         skip_yearly_backtest=args.skip_yearly_backtest,
+        backtest_start_year=args.backtest_start_year,
+        backtest_end_year=args.backtest_end_year,
         skip_regressor=args.skip_regressor,
         feature_set=args.feature_set,
         drop_era5_families=tuple(args.drop_era5_families or ()),
         calibration_method=args.calibration_method,
     )
+    if args.yearly_backtest_only:
+        if args.ablation or args.era5_family_ablation:
+            parser.error("--yearly-backtest-only does not train ablation arms")
+        results = run_yearly_backtest(
+            feature_table_path=args.features,
+            config=config,
+            run_root=args.run_root,
+            run_name=args.run_name,
+            model_dir=args.model_dir,
+        )
+        print(results["table"])
+        print(json.dumps({"json_path": str(results["json_path"]), "csv_path": str(results["csv_path"])}, indent=2))
+        return
     if args.era5_family_ablation:
         results = run_era5_family_ablation(
             feature_table_path=args.features,
