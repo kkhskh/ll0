@@ -22,7 +22,22 @@ It applies to a region-year with all three of these:
 - a season that burns cells the training summers left quiet, so the lag features stay near zero
 - a training window of about two seasons
 
-That is the 2022 Europe row. It is the number to ignore when quoting the model. v8’s Europe score, trained through 2023, is the one that matches 2023–2025.
+That is the 2022 Europe row. It is the number to ignore when quoting the model.
+
+## v8 holdout, split
+
+Scored on the existing v8 predictions, 2024–2025. Continent totals are unchanged. `europe_south` is below 46°N. `europe_north` is 46°N and above. `africa_fringe` is the strip the Africa box claims.
+
+| Region | Rows | Fires | Fire rate | ROC | PR-AUC | Capture@10% |
+|---|---:|---:|---:|---:|---:|---:|
+| Europe | 107,832 | 4,533 | 0.0420 | 0.9222 | 0.5100 | 0.7117 |
+| europe_south | 27,456 | 1,543 | 0.0562 | 0.8775 | 0.3943 | 0.5509 |
+| europe_north | 80,376 | 2,990 | 0.0372 | 0.9357 | 0.5756 | 0.7940 |
+| africa_fringe | 4,680 | 125 | 0.0267 | 0.8880 | 0.3063 | 0.6480 |
+
+The north holds the published Europe number up. ROC 0.9357, PR-AUC 0.5756, capture 0.7940, and 2,990 of the 4,533 fires. The south is the weak piece: ROC 0.8775, PR-AUC 0.3943, capture 0.5509, close to Australia. The fringe is 125 fires. It is missing from the Europe score and too small to move Africa.
+
+Training through 2023 raised the mixed Europe score from the 2022 miss to PR-AUC 0.51. It left the Mediterranean south at 0.39. More seasons are aimed at that south. The headline recovery is not a fix there.
 
 The same pattern applies to the first year a district burns off its recent map. Gironde in 2022 is the prototype. It also applies to any later refit that goes back to a two-year window.
 
@@ -30,9 +45,9 @@ It does not apply to Africa, South America, or the global ROC. Those held in 202
 
 ## Order of work
 
-1. Split the Europe score on the v8 holdout into `europe_south` (below 46°N), `europe_north` (46°N and above), and `africa_fringe` (the southern strip the Africa box claims). Continent totals stay the same. This uses the predictions already on Drive.
-2. Add MCD64A1, ERA5-Land, and lagged FIRMS for 2010–2019, with 2009 present so the first year’s lag is real. Holdout stays 2024–2025. The question is whether Europe’s short-record drop goes away once several Atlantic and Mediterranean seasons are in the fit.
-3. Daily fire-weather, rolled up to the month and lagged, attached onto the current table. That is the Australia experiment, and the one that could also see a European heat-wave month the monthly mean washes out.
+1. Split the Europe score. Done. The weak piece is `europe_south`, not the north.
+2. Daily fire-weather, rolled up to the month and lagged, attached onto the current table. Judge it on Australia, North America, and `europe_south`. The month row is hot-dry days (at least 30 C, at most 40% humidity, under 1 mm of rain), the Canadian fire-weather index, and the worst 7-day mean of that index. Same-month values are dropped on attach. 2019 is included so January 2020 has a prior year. v8 stays in place. The new fit is v9.
+3. Add MCD64A1, ERA5-Land, and lagged FIRMS for 2010–2019, with 2009 present so the first year’s lag is real. Holdout stays 2024–2025. The question is whether `europe_south` moves once more Mediterranean seasons are in the fit.
 4. A finer grid last, and only for Australia or western North America.
 
 ```bash

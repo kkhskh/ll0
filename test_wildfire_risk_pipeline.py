@@ -28,7 +28,15 @@ from wildfire_risk.convert_mcd12q1 import (
     parse_mcd12q1_filename,
     sinusoidal_xy_to_lonlat,
 )
+from wildfire_risk.build_fire_weather import reduce_plane_to_cells
 from wildfire_risk.evaluate import assign_continent, europe_subregion, score_continents
+from wildfire_risk.fire_weather import (
+    FireWeatherState,
+    fwi_step,
+    seasonal_day_length,
+    summarize_month,
+)
+from wildfire_risk.fire_weather import _DMC_DAY_LENGTH
 from wildfire_risk.render_maps import render_monthly_risk_maps
 from wildfire_risk.train_baseline import (
     TrainConfig,
@@ -770,6 +778,75 @@ class WildfireRiskPipelineTest(unittest.TestCase):
         self.assertEqual(rows["europe_north"]["n_fires"], 1)
         self.assertEqual(rows["africa_fringe"]["n_fires"], 1)
         self.assertEqual(rows["africa"]["n_fires"], 1)
+
+    def test_fire_weather_index_keeps_a_dry_day_and_a_seven_day_window(self) -> None:
+        ffmc, _, _, _ = fwi_step(
+            np.array([85.0]),
+            np.array([6.0]),
+            np.array([15.0]),
+            np.array([17.0]),
+            np.array([42.0]),
+            np.array([25.0]),
+            np.array([0.0]),
+            np.array([45.0]),
+            7,
+        )
+        self.assertAlmostEqual(float(ffmc[0]), 87.69298009, places=5)
+        wet, _, _, _ = fwi_step(
+            np.array([85.0]),
+            np.array([6.0]),
+            np.array([15.0]),
+            np.array([17.0]),
+            np.array([42.0]),
+            np.array([25.0]),
+            np.array([20.0]),
+            np.array([45.0]),
+            7,
+        )
+        self.assertLess(float(wet[0]), 70.0)
+        self.assertAlmostEqual(float(seasonal_day_length(np.array([-45.0]), 1, _DMC_DAY_LENGTH)[0]), 12.4)
+
+        state = FireWeatherState.start(1)
+        state.fwi_hist[:] = 40.0
+        summary, _ = summarize_month(
+            temp_c=np.array([[0.0]]),
+            rh=np.array([[95.0]]),
+            wind_kmh=np.array([[0.0]]),
+            precip_mm=np.array([[20.0]]),
+            valid=np.array([[True]]),
+            lat=np.array([40.0]),
+            month=7,
+            state=state,
+            tmax_c=np.array([[35.0]]),
+        )
+        self.assertEqual(float(summary["hot_dry_days"][0]), 0.0)
+        self.assertGreater(float(summary["worst_7day"][0]), 20.0)
+
+        hot_state = FireWeatherState.start(1)
+        hot, _ = summarize_month(
+            temp_c=np.array([[32.0], [32.0]]),
+            rh=np.array([[20.0], [90.0]]),
+            wind_kmh=np.array([[10.0], [10.0]]),
+            precip_mm=np.array([[0.0], [0.0]]),
+            valid=np.array([[True], [True]]),
+            lat=np.array([40.0]),
+            month=7,
+            state=hot_state,
+            tmax_c=np.array([[35.0], [35.0]]),
+        )
+        self.assertEqual(float(hot["hot_dry_days"][0]), 1.0)
+
+        grid = GridSpec(resolution_deg=0.5)
+        totals, counts = reduce_plane_to_cells(
+            np.array([[10.0, 30.0], [np.nan, 5.0]]),
+            np.array([0.1, 0.6]),
+            np.array([0.1, 0.2]),
+            grid,
+        )
+        cell = int(np.floor((0.1 + 90.0) / 0.5)) * grid.n_lon + int(np.floor((0.1 + 180.0) / 0.5))
+        self.assertEqual(counts[cell], 2.0)
+        self.assertAlmostEqual(totals[cell] / counts[cell], 20.0)
+        self.assertEqual(feature_family("fireweather_fwi_mean_lag_1"), "fireweather")
 
     def test_isotonic_calibrator_is_monotonic_and_bounded(self) -> None:
         raw = np.array([0.05, 0.10, 0.20, 0.80, 0.90, 0.95])

@@ -71,6 +71,7 @@ TERRAIN_PREFIXES = ("terrain_",)
 POPULATION_PREFIXES = ("population_",)
 ROADS_PREFIXES = ("roads_",)
 FIRMS_PREFIXES = ("firms_",)
+FIREWEATHER_PREFIXES = ("fireweather_",)
 DEFAULT_DYNAMIC_PREFIXES = ("era5",)
 ABLATION_ARMS = ("history", "era5", "both")
 ERA5_FAMILY_TOKENS: dict[str, tuple[str, ...]] = {
@@ -153,6 +154,8 @@ def feature_family(column: str, dynamic_prefixes: tuple[str, ...] = DEFAULT_DYNA
         return "roads"
     if column.startswith(FIRMS_PREFIXES):
         return "firms"
+    if column.startswith(FIREWEATHER_PREFIXES):
+        return "fireweather"
     for prefix in dynamic_prefixes:
         if column.startswith(f"{prefix}_"):
             return "era5"
