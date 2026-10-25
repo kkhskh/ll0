@@ -28,7 +28,7 @@ from wildfire_risk.convert_mcd12q1 import (
     parse_mcd12q1_filename,
     sinusoidal_xy_to_lonlat,
 )
-from wildfire_risk.evaluate import assign_continent, score_continents
+from wildfire_risk.evaluate import assign_continent, europe_subregion, score_continents
 from wildfire_risk.render_maps import render_monthly_risk_maps
 from wildfire_risk.train_baseline import (
     TrainConfig,
@@ -742,6 +742,34 @@ class WildfireRiskPipelineTest(unittest.TestCase):
         self.assertIn("north_america", rows)
         self.assertEqual(rows["africa"]["n_fires"], 1)
         self.assertEqual(rows["north_america"]["n_fires"], 1)
+
+    def test_europe_box_splits_south_from_north_and_keeps_the_africa_fringe(self) -> None:
+        points = pd.DataFrame(
+            {
+                "lat_center": [37.39, 44.84, 48.9, 55.76, 36.75],
+                "lon_center": [-5.98, -0.58, 2.3, 37.62, 3.06],
+            }
+        )
+        continent = assign_continent(points["lat_center"], points["lon_center"])
+        self.assertEqual(list(continent), ["africa", "europe", "europe", "europe", "africa"])
+        parts = europe_subregion(points["lat_center"], points["lon_center"], continent)
+        self.assertEqual(list(parts), ["africa_fringe", "europe_south", "europe_north", "europe_north", "africa_fringe"])
+
+        scored = pd.DataFrame(
+            {
+                "lat_center": [44.84, 44.84, 52.5, 52.5, 37.39],
+                "lon_center": [-0.58, -0.58, 13.4, 13.4, -5.98],
+                "binary_risk_label": [1, 0, 0, 1, 1],
+                "ranking_score": [0.9, 0.2, 0.1, 0.8, 0.7],
+                "predicted_probability": [0.4, 0.05, 0.02, 0.3, 0.2],
+            }
+        )
+        rows = {row["region"]: row for row in score_continents(scored)}
+        self.assertEqual(rows["europe"]["n_fires"], 2)
+        self.assertEqual(rows["europe_south"]["n_fires"], 1)
+        self.assertEqual(rows["europe_north"]["n_fires"], 1)
+        self.assertEqual(rows["africa_fringe"]["n_fires"], 1)
+        self.assertEqual(rows["africa"]["n_fires"], 1)
 
     def test_isotonic_calibrator_is_monotonic_and_bounded(self) -> None:
         raw = np.array([0.05, 0.10, 0.20, 0.80, 0.90, 0.95])

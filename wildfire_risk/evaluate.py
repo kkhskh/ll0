@@ -267,6 +267,29 @@ def score_one_region(df: pd.DataFrame, region: str) -> dict[str, Any]:
     }
 
 
+def europe_subregion(lat: pd.Series | np.ndarray, lon: pd.Series | np.ndarray, continent: np.ndarray) -> np.ndarray:
+    """Split the Europe box, and mark the southern strip the Africa box claims first.
+
+    Continent labels stay as they are. These tags are extra rows so Seville and the
+    Algarve, which fall in the Africa box, can be counted without moving Africa's score.
+    """
+    lat_np = np.asarray(lat, dtype=float)
+    lon_np = np.asarray(lon, dtype=float)
+    labels = np.full(lat_np.shape, "", dtype=object)
+    europe = continent == "europe"
+    labels[europe & (lat_np < 46.0)] = "europe_south"
+    labels[europe & (lat_np >= 46.0)] = "europe_north"
+    fringe = (
+        (continent == "africa")
+        & (lat_np >= 35.0)
+        & (lat_np <= 37.5)
+        & (lon_np >= -11.0)
+        & (lon_np <= 30.0)
+    )
+    labels[fringe] = "africa_fringe"
+    return labels
+
+
 def score_continents(df: pd.DataFrame) -> list[dict[str, Any]]:
     required = {"binary_risk_label", "lat_center", "lon_center"}
     missing = required - set(df.columns)
@@ -281,6 +304,13 @@ def score_continents(df: pd.DataFrame) -> list[dict[str, Any]]:
         if region in {"global"} or region not in present:
             continue
         rows.append(score_one_region(scored[scored["continent"] == region], region))
+
+    scored["europe_part"] = europe_subregion(scored["lat_center"], scored["lon_center"], scored["continent"].to_numpy())
+    for region in ("europe_south", "europe_north", "africa_fringe"):
+        part = scored[scored["europe_part"] == region]
+        if part.empty:
+            continue
+        rows.append(score_one_region(part, region))
     return rows
 
 
