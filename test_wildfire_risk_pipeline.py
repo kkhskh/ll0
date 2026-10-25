@@ -28,7 +28,7 @@ from wildfire_risk.convert_mcd12q1 import (
     parse_mcd12q1_filename,
     sinusoidal_xy_to_lonlat,
 )
-from wildfire_risk.build_fire_weather import reduce_plane_to_cells
+from wildfire_risk.build_fire_weather import _unpack_netcdf, reduce_plane_to_cells
 from wildfire_risk.evaluate import assign_continent, europe_subregion, score_continents
 from wildfire_risk.fire_weather import (
     FireWeatherState,
@@ -847,6 +847,26 @@ class WildfireRiskPipelineTest(unittest.TestCase):
         self.assertEqual(counts[cell], 2.0)
         self.assertAlmostEqual(totals[cell] / counts[cell], 20.0)
         self.assertEqual(feature_family("fireweather_fwi_mean_lag_1"), "fireweather")
+
+    def test_fire_weather_zip_keeps_every_variable_file(self) -> None:
+        import zipfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target = Path(tmp_dir) / "tmean_2019-01.nc"
+            with zipfile.ZipFile(target, "w") as bundle:
+                bundle.writestr("2m_temperature_0_daily-mean.nc", b"temperature")
+                bundle.writestr("2m_dewpoint_temperature_0_daily-mean.nc", b"dewpoint")
+            unpacked = _unpack_netcdf(target)
+            names = sorted(path.name for path in unpacked)
+            self.assertEqual(
+                names,
+                [
+                    "tmean_2019-01__2m_dewpoint_temperature_0_daily-mean.nc",
+                    "tmean_2019-01__2m_temperature_0_daily-mean.nc",
+                ],
+            )
+            self.assertFalse(target.exists())
+            self.assertEqual(unpacked[0].read_bytes() in {b"temperature", b"dewpoint"}, True)
 
     def test_isotonic_calibrator_is_monotonic_and_bounded(self) -> None:
         raw = np.array([0.05, 0.10, 0.20, 0.80, 0.90, 0.95])

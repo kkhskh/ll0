@@ -19,6 +19,7 @@ import argparse
 import calendar
 import logging
 import os
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -45,6 +46,12 @@ OUTPUT_COLUMNS = ("cell_id", "month", "hot_dry_days", "fwi_mean", "fwi_max", "wo
 def emit(message: str) -> None:
     print(message, flush=True)
     LOGGER.info(message)
+
+
+def _as_paths(value: Path | str | list[Path] | tuple[Path, ...]) -> list[Path]:
+    if isinstance(value, (str, Path)):
+        return [Path(value)]
+    return [Path(item) for item in value]
 
 
 def reduce_plane_to_cells(
@@ -152,19 +159,40 @@ def _fill_daily_precip_mm(
         counts[slot] = np.maximum(counts[slot], count)
 
 
+def _open_many(paths: list[Path]) -> list:
+    return [_open_dataset(path) for path in paths]
+
+
+def _dataset_and_variable(datasets: list, candidates: tuple[str, ...]):
+    """Copernicus writes one NetCDF per variable when a request asks for several."""
+    for dataset in datasets:
+        for name in candidates:
+            if name in dataset.data_vars:
+                return dataset, name
+    available = [list(dataset.data_vars) for dataset in datasets]
+    raise KeyError(f"None of {candidates} found in {available}")
+
+
 def month_arrays_from_files(
-    tmax_path: Path,
-    tmean_path: Path,
-    wind_path: Path,
-    precip_path: Path,
+    tmax_path: Path | list[Path],
+    tmean_path: Path | list[Path],
+    wind_path: Path | list[Path],
+    precip_path: Path | list[Path],
     grid_spec: GridSpec,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[pd.Timestamp]]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[pd.Timestamp]]:
     """Return tmax C, mean temp C, RH, wind km/h, precip mm, valid, and the dates."""
-    tmax_ds = _open_dataset(tmax_path)
-    tmean_ds = _open_dataset(tmean_path)
-    wind_ds = _open_dataset(wind_path)
-    precip_ds = _open_dataset(precip_path)
+    tmax_sets = _open_many(_as_paths(tmax_path))
+    tmean_sets = _open_many(_as_paths(tmean_path))
+    wind_sets = _open_many(_as_paths(wind_path))
+    precip_sets = _open_many(_as_paths(precip_path))
+    opened = tmax_sets + tmean_sets + wind_sets + precip_sets
     try:
+        tmax_ds, tmax_name = _dataset_and_variable(tmax_sets, ("t2m", "2m_temperature"))
+        tmean_ds, tmean_name = _dataset_and_variable(tmean_sets, ("t2m", "2m_temperature"))
+        dew_ds, dew_name = _dataset_and_variable(tmean_sets, ("d2m", "2m_dewpoint_temperature"))
+        wind_u_ds, wind_u_name = _dataset_and_variable(wind_sets, ("u10", "10m_u_component_of_wind"))
+        wind_v_ds, wind_v_name = _dataset_and_variable(wind_sets, ("v10", "10m_v_component_of_wind"))
+        precip_ds, _precip_name = _dataset_and_variable(precip_sets, ("tp", "total_precipitation"))
         stamps = [pd.Timestamp(stamp).normalize() for stamp in _dates_in_dataset(tmax_ds)]
         dates = sorted(set(stamps))
         date_index = {day: index for index, day in enumerate(dates)}
@@ -178,31 +206,15 @@ def month_arrays_from_files(
         precip = np.zeros(shape)
         temp_count = np.zeros(shape)
         precip_count = np.zeros(shape)
-        _fill_daily_mean(tmax_ds, _variable(tmax_ds, ("t2m", "2m_temperature")), grid_spec, date_index, tmax, temp_count)
-        _fill_daily_mean(
-            tmean_ds,
-            _variable(tmean_ds, ("t2m", "2m_temperature")),
-            grid_spec,
-            date_index,
-            tmean,
-            np.zeros(shape),
-        )
-        _fill_daily_mean(
-            tmean_ds,
-            _variable(tmean_ds, ("d2m", "2m_dewpoint_temperature")),
-            grid_spec,
-            date_index,
-            dewpoint,
-            np.zeros(shape),
-        )
-        _fill_daily_mean(wind_ds, _variable(wind_ds, ("u10", "10m_u_component_of_wind")), grid_spec, date_index, wind_u, np.zeros(shape))
-        _fill_daily_mean(wind_ds, _variable(wind_ds, ("v10", "10m_v_component_of_wind")), grid_spec, date_index, wind_v, np.zeros(shape))
+        _fill_daily_mean(tmax_ds, tmax_name, grid_spec, date_index, tmax, temp_count)
+        _fill_daily_mean(tmean_ds, tmean_name, grid_spec, date_index, tmean, np.zeros(shape))
+        _fill_daily_mean(dew_ds, dew_name, grid_spec, date_index, dewpoint, np.zeros(shape))
+        _fill_daily_mean(wind_u_ds, wind_u_name, grid_spec, date_index, wind_u, np.zeros(shape))
+        _fill_daily_mean(wind_v_ds, wind_v_name, grid_spec, date_index, wind_v, np.zeros(shape))
         _fill_daily_precip_mm(precip_ds, grid_spec, date_index, precip, precip_count)
     finally:
-        tmax_ds.close()
-        tmean_ds.close()
-        wind_ds.close()
-        precip_ds.close()
+        for dataset in opened:
+            dataset.close()
 
     valid = temp_count > 0
     with np.errstate(invalid="ignore"):
@@ -265,28 +277,41 @@ def _cds_client():
     return cdsapi.Client(timeout=600, quiet=False, retry_max=8)
 
 
-def _retrieve(client, dataset: str, request: dict, target: Path) -> Path:
+def _unpack_netcdf(target: Path) -> list[Path]:
+    """Return the NetCDF files for one request. A multi-variable request is a zip of one file each."""
+    if not zipfile.is_zipfile(target):
+        return [target]
+    with zipfile.ZipFile(target) as bundle:
+        members = [name for name in bundle.namelist() if name.endswith(".nc") and not name.endswith("/")]
+        if not members:
+            raise ValueError(f"{target} contained {bundle.namelist()}, expected NetCDF files")
+        extracted: list[Path] = []
+        for member in members:
+            dest = target.parent / f"{target.stem}__{Path(member).name}"
+            with bundle.open(member) as source, dest.open("wb") as sink:
+                shutil.copyfileobj(source, sink)
+            extracted.append(dest)
+    target.unlink()
+    emit(f"Unpacked {target.name} into {len(extracted)} NetCDF files")
+    return extracted
+
+
+def _retrieve(client, dataset: str, request: dict, target: Path) -> list[Path]:
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() and target.stat().st_size > 0:
         emit(f"Already downloaded {target.name}")
-        return target
-    emit(f"Requesting {target.name}")
-    client.retrieve(dataset, request, str(target))
-    if zipfile.is_zipfile(target):
-        with zipfile.ZipFile(target) as bundle:
-            members = [name for name in bundle.namelist() if name.endswith(".nc")]
-            if len(members) != 1:
-                raise ValueError(f"{target} contained {members}, expected one NetCDF")
-            extracted = target.with_suffix(".extracted.nc")
-            with bundle.open(members[0]) as source, extracted.open("wb") as sink:
-                sink.write(source.read())
-        target.unlink()
-        extracted.replace(target)
-    emit(f"Downloaded {target.name} ({target.stat().st_size / 1e6:.0f} MB)")
-    return target
+    else:
+        for leftover in target.parent.glob(f"{target.stem}__*.nc"):
+            leftover.unlink()
+        emit(f"Requesting {target.name}")
+        client.retrieve(dataset, request, str(target))
+    paths = _unpack_netcdf(target)
+    size_mb = sum(path.stat().st_size for path in paths) / 1e6
+    emit(f"Downloaded {target.stem} ({size_mb:.0f} MB, {len(paths)} file{'s' if len(paths) != 1 else ''})")
+    return paths
 
 
-def download_month(client, year: int, month: int, raw_dir: Path) -> dict[str, Path]:
+def download_month(client, year: int, month: int, raw_dir: Path) -> dict[str, list[Path]]:
     days = _days(year, month)
     label = f"{year:04d}-{month:02d}"
     tmax = _retrieve(
@@ -399,8 +424,9 @@ def build_fire_weather_table(
         frame = summary_frame(summary, cell_ids, month)
         frame.to_csv(shard_path, index=False)
         _save_state(state_path, state, month)
-        for path in paths.values():
-            path.unlink(missing_ok=True)
+        for group in paths.values():
+            for path in group:
+                path.unlink(missing_ok=True)
         emit(
             f"Built {month}: {len(frame):,} cells, "
             f"mean hot-dry days {frame['hot_dry_days'].mean():.2f}, "
