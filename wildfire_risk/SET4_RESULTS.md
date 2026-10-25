@@ -1,8 +1,8 @@
 # Set 4
 
-Set 4 checks whether the working model holds up one season at a time, and puts every source tried so far in one table.
+Set 4 checked whether the working model holds up one season at a time, and collected every source tried so far in one table.
 
-The working model is v8: burn history, ERA5-Land without wind, and lagged FIRMS. Train 2020–2023, holdout 2024–2025. v8 itself is unchanged by this check.
+The working model stays v8: burn history, ERA5-Land without wind, and lagged FIRMS. Train 2020–2023, holdout 2024–2025. The yearly fits were a check. They were not saved over v8.
 
 ## Keep rule
 
@@ -54,18 +54,68 @@ Calibration is isotonic, fit on the holdout path, and is separate from the ranki
 
 ## Yearly refit
 
-The holdout score is one fit. This check fits again for each test year:
+Each test year is a new fit on every earlier year. Same-month FIRMS and the ERA5 wind family stay out. Scores are raw ranking probabilities. 2024 uses the same training years as v8 and is scored on 2024 alone. 2025 is allowed to see 2024.
 
-| Test year | Trains on |
-|---|---|
-| 2022 | 2020–2021 |
-| 2023 | 2020–2022 |
-| 2024 | 2020–2023 |
-| 2025 | 2020–2024 |
+| Test year | Trains on | Rows in the fit | Fires in the test year | Fire rate |
+|---|---|---:|---:|---:|
+| 2022 | 2020–2021 | 2,264,520 | 62,131 | 0.0549 |
+| 2023 | 2020–2022 | 3,396,780 | 67,973 | 0.0600 |
+| 2024 | 2020–2023 | 4,529,040 | 67,913 | 0.0600 |
+| 2025 | 2020–2024 | 5,661,300 | 61,006 | 0.0539 |
 
-2024 uses the same training years as v8, but it is a new fit scored on 2024 alone. 2025 is allowed to see 2024. Same-month FIRMS and the ERA5 wind family stay out.
+Each test year is 1,132,260 rows. The `other` region is ignored.
 
-The Colab run writes `reports/yearly_backtest.csv` and `reports/yearly_backtest.json` under `wildfire-risk-mvp-2020-2025-noleak-v8-yearly`. It does not write a new holdout model and does not overwrite v8. Scores in that table are raw ranking probabilities, by continent.
+ROC:
+
+| Region | 2022 | 2023 | 2024 | 2025 | v8 pooled |
+|---|---:|---:|---:|---:|---:|
+| Global | 0.9621 | 0.9616 | 0.9648 | 0.9647 | 0.9645 |
+| Africa | 0.9639 | 0.9647 | 0.9645 | 0.9623 | 0.9629 |
+| Asia | 0.9197 | 0.9205 | 0.9262 | 0.9266 | 0.9271 |
+| Australia | 0.8946 | 0.8728 | 0.8931 | 0.8832 | 0.8861 |
+| Europe | 0.8855 | 0.9221 | 0.9250 | 0.9179 | 0.9222 |
+| North America | 0.9219 | 0.9157 | 0.9226 | 0.9326 | 0.9266 |
+| South America | 0.9107 | 0.9156 | 0.9144 | 0.9147 | 0.9129 |
+
+PR-AUC:
+
+| Region | 2022 | 2023 | 2024 | 2025 | v8 pooled |
+|---|---:|---:|---:|---:|---:|
+| Global | 0.7200 | 0.7356 | 0.7448 | 0.7266 | 0.7363 |
+| Africa | 0.8807 | 0.8890 | 0.8904 | 0.8801 | 0.8857 |
+| Asia | 0.4663 | 0.5127 | 0.5292 | 0.4999 | 0.5187 |
+| Australia | 0.6421 | 0.6690 | 0.6529 | 0.6483 | 0.6516 |
+| Europe | 0.3222 | 0.4620 | 0.5283 | 0.4990 | 0.5100 |
+| North America | 0.4569 | 0.5094 | 0.4992 | 0.4837 | 0.4885 |
+| South America | 0.7343 | 0.7444 | 0.7518 | 0.7035 | 0.7259 |
+
+Capture@10%:
+
+| Region | 2022 | 2023 | 2024 | 2025 | v8 pooled |
+|---|---:|---:|---:|---:|---:|
+| Global | 0.8095 | 0.8030 | 0.8122 | 0.8241 | 0.8161 |
+| Africa | 0.5533 | 0.5297 | 0.5165 | 0.5413 | 0.5299 |
+| Asia | 0.6945 | 0.7038 | 0.7041 | 0.7366 | 0.7176 |
+| Australia | 0.5059 | 0.4050 | 0.4554 | 0.4210 | 0.4384 |
+| Europe | 0.5919 | 0.7319 | 0.7204 | 0.7030 | 0.7117 |
+| North America | 0.6914 | 0.6635 | 0.6876 | 0.7253 | 0.6996 |
+| South America | 0.4537 | 0.4645 | 0.4416 | 0.5099 | 0.4722 |
+
+## What the years say
+
+Global ROC stays between 0.9616 and 0.9648. v8’s pooled 0.9645 was not one season. 2024 alone, trained on 2020–2023, is 0.9648. 2025, trained through 2024, is 0.9647.
+
+PR-AUC follows how much burned. 2024 has 67,913 fires and global PR-AUC 0.7448. 2025 has 61,006 fires and PR-AUC 0.7266, with the best capture of the four years at 0.8241. The pooled v8 PR-AUC of 0.7363 sits between those two years.
+
+Africa stays near the ceiling in every year. Australia stays the weak high-fire continent. Its lowest ROC is 0.8728 in 2023, when Australia’s fire rate rose to 0.1891 (6,788 fires) and capture fell to 0.4050. South America and Asia keep a flat ROC. Their 2025 PR-AUC drop lines up with fewer fires: South America 14,655 to 11,107, Asia 11,913 to 10,081.
+
+Europe in 2022 is the miss. PR-AUC 0.3222 and capture 0.5919, with two training years and 2,012 fires. From 2023 on, Europe is back near v8, PR-AUC 0.46 to 0.53.
+
+## Where this leaves the model
+
+v8 remains the working model. Set 4 is the evidence that the same skill shows up in each season from 2022 through 2025.
+
+The table is on Drive at `runs/wildfire-risk-mvp-2020-2025-noleak-v8-yearly/reports/yearly_backtest.csv`.
 
 ```bash
 python wildfire_risk/train_baseline.py \
