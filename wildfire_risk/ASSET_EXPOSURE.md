@@ -126,6 +126,26 @@ Demo book extra columns: `high_or_extreme_share`, `herfindahl_top_cells`,
 `n_demo_assets`. These are concentration of the public demo book, **not**
 customer TVaR.
 
+## Local v8 July 2024 overlay
+
+Ran on this machine against gitignored `wildfire_risk/validation_predictions.csv`.
+Output folder `artifacts/wildfire_risk_runs/wildfire-asset-exposure-global-v8/`
+is local only (ranked dumps are tens to hundreds of MB).
+
+| Region | v8 cells | OSM lines | WRI plants | Ranked | high | extreme |
+|---|---:|---:|---:|---:|---:|---:|
+| africa | 12,050 | 54,544 | 1,179 | 55,674 | 22,542 | 14,761 |
+| asia | 23,399 | 432,386 | 8,264 | 427,637 | 179,060 | 12,437 |
+| australia | 2,991 | 19,735 | 487 | 20,124 | 10,767 | 1,124 |
+| europe | 4,493 | 337,885 | 10,174 | 338,817 | 111,447 | 12,660 |
+| north_america | 14,416 | 338,199 | 11,515 | 346,176 | 172,238 | 12,693 |
+| south_america | 6,544 | 29,846 | 3,175 | 33,020 | 17,157 | 5,374 |
+| other | 30,462 | — | 142 | 137 | 8 | 0 |
+| **global** | | | 34,936 | **1,221,585** | 513,219 | 59,049 |
+
+World Bank `osm_power_tmm.zip` stayed HTTP 403. OSM GeoParquet fallback succeeded.
+HIFLD substations were not used on this pass because OSM lines filled North America.
+
 ## Remaining gaps
 
 - No fire spread, hourly wind, smoke, or insured loss.
@@ -133,4 +153,4 @@ customer TVaR.
 - No app API for this overlay.
 - The 4 GB v8 holdout CSV stays on the machine that trained/scored v8. GitHub
   keeps the synthetic math demo. Run `--run-name wildfire-asset-exposure-global-v8`
-  locally against that file; do not commit the CSV or the 40–50 MB ranked dumps.
+  locally against that file; do not commit the CSV or the ranked dumps.
