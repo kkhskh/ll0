@@ -282,6 +282,13 @@ def parse_wkt_line_parts(wkt: str) -> list[tuple[np.ndarray, np.ndarray]]:
     return parts
 
 
+def normalize_month_column(values: pd.Series) -> pd.Series:
+    """YYYY-MM strings. Invalid rows (including a repeated CSV header) become NA."""
+    parsed = pd.to_datetime(values, errors="coerce")
+    months = parsed.dt.to_period("M").astype("string")
+    return months.where(parsed.notna(), other=pd.NA)
+
+
 def peak_month_for_region(pred_df: pd.DataFrame, month: str | None = None) -> str:
     """Peak-fire month inside one region. Africa's peak must not overwrite Australia's."""
     if month:
@@ -289,7 +296,8 @@ def peak_month_for_region(pred_df: pd.DataFrame, month: str | None = None) -> st
     if pred_df.empty or "month" not in pred_df.columns:
         raise ValueError("Prediction table needs a month column to choose a peak-fire month")
     working = pred_df.copy()
-    working["month"] = pd.to_datetime(working["month"]).dt.to_period("M").astype(str)
+    working["month"] = normalize_month_column(working["month"])
+    working = working.dropna(subset=["month"])
     grouped = working.groupby("month", sort=True)
     summary = pd.DataFrame(
         {
@@ -332,7 +340,8 @@ def overlay_assets_on_predictions(
 
     pred = predictions.copy()
     if "month" in pred.columns:
-        pred["month"] = pd.to_datetime(pred["month"]).dt.to_period("M").astype(str)
+        pred["month"] = normalize_month_column(pred["month"])
+        pred = pred.dropna(subset=["month"])
     pred = pred.drop_duplicates(subset=["cell_id"], keep="first")
     score_cols = [
         column
@@ -375,6 +384,8 @@ def stream_predictions_by_continent(
     predictions_path = require_predictions_file(predictions_path)
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
+    for stale in dest_dir.glob("*.csv"):
+        stale.unlink()
 
     header = pd.read_csv(predictions_path, nrows=0)
     usecols = [column for column in PREDICTION_COLUMNS if column in header.columns]
@@ -387,7 +398,9 @@ def stream_predictions_by_continent(
     try:
         for chunk in pd.read_csv(predictions_path, usecols=usecols, chunksize=chunksize):
             if "month" in chunk.columns:
-                chunk["month"] = pd.to_datetime(chunk["month"]).dt.to_period("M").astype(str)
+                chunk = chunk.copy()
+                chunk["month"] = normalize_month_column(chunk["month"])
+                chunk = chunk.dropna(subset=["month"])
             if month:
                 chunk = chunk[chunk["month"] == str(month)]
             if chunk.empty:
@@ -410,7 +423,7 @@ def stream_predictions_by_continent(
                 name = str(continent)
                 if name not in writers:
                     path = dest_dir / f"{name}.csv"
-                    writers[name] = path.open("a", encoding="utf-8", newline="")
+                    writers[name] = path.open("w", encoding="utf-8", newline="")
                     paths[name] = path
                     header_needed = True
                 else:
@@ -581,6 +594,29 @@ def load_world_bank_osm_lines(
     return frame, status
 
 
+def _ensure_local_osm_parquet(cache_dir: Path | None, url: str) -> str:
+    """Download the 509 MB GeoParquet once. DuckDB then queries the local file."""
+    if cache_dir is None:
+        return url
+    dest = Path(cache_dir) / "power_line.parquet"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.is_file() and dest.stat().st_size > 1_000_000:
+        return str(dest)
+    tmp = dest.with_suffix(".parquet.part")
+    session = _http_session()
+    with session.get(url, stream=True, timeout=300) as response:
+        response.raise_for_status()
+        with tmp.open("wb") as handle:
+            for block in response.iter_content(1024 * 1024):
+                if block:
+                    handle.write(block)
+    if tmp.stat().st_size < 1_000_000:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(f"OSM parquet download too small: {tmp}")
+    tmp.replace(dest)
+    return str(dest)
+
+
 def load_osm_parquet_lines_for_bbox(
     bbox: tuple[float, float, float, float],
     spec: GridSpec | None = None,
@@ -604,21 +640,28 @@ def load_osm_parquet_lines_for_bbox(
         region=region or "global",
     )
     cache_path = None
-    if cache_dir is not None and region:
+    if cache_dir is not None:
         cache_dir = Path(cache_dir)
         cache_dir.mkdir(parents=True, exist_ok=True)
-        cache_path = cache_dir / f"osm_power_line_{region}.pkl"
-        if cache_path.is_file() and cache_path.stat().st_size > 0:
-            assets = pd.read_pickle(cache_path)
-            status.n_assets = int(len(assets))
-            status.note = f"Cached ODbL OSM lines for {region}: {len(assets)} (ODbL 1.0, © OpenStreetMap contributors)"
-            status.path = str(cache_path)
-            return assets, status
+        if region:
+            cache_path = cache_dir / f"osm_power_line_{region}.pkl"
+            if cache_path.is_file() and cache_path.stat().st_size > 0:
+                assets = pd.read_pickle(cache_path)
+                status.n_assets = int(len(assets))
+                status.note = f"Cached ODbL OSM lines for {region}: {len(assets)} (ODbL 1.0, © OpenStreetMap contributors)"
+                status.path = str(cache_path)
+                return assets, status
     try:
         import duckdb
     except ImportError:
         status.status = "missing"
         status.note = "duckdb is required to read the GeoParquet OSM line extract without geopandas"
+        return pd.DataFrame(), status
+    try:
+        parquet_source = _ensure_local_osm_parquet(cache_dir, url)
+    except Exception as exc:  # noqa: BLE001
+        status.status = "missing"
+        status.note = f"parquet download failed: {type(exc).__name__}: {exc}"
         return pd.DataFrame(), status
     sql = """
         SELECT osm_id, name, operator, type, lifecycle, voltage_kv,
@@ -634,10 +677,12 @@ def load_osm_parquet_lines_for_bbox(
     offset = 0
     try:
         con = duckdb.connect()
-        con.execute("INSTALL spatial; LOAD spatial; INSTALL httpfs; LOAD httpfs;")
+        con.execute("INSTALL spatial; LOAD spatial;")
+        if parquet_source.startswith("http://") or parquet_source.startswith("https://"):
+            con.execute("INSTALL httpfs; LOAD httpfs;")
         while True:
             frame = con.execute(
-                sql, [url, lon_max, lon_min, lat_max, lat_min, batch_size, offset]
+                sql, [parquet_source, lon_max, lon_min, lat_max, lat_min, batch_size, offset]
             ).fetchdf()
             if frame.empty:
                 break
@@ -1109,7 +1154,7 @@ def overlay_region_predictions(
 ) -> tuple[pd.DataFrame, str]:
     chosen_month = peak_month_for_region(pred_df, month=month)
     month_pred = pred_df.copy()
-    month_pred["month"] = pd.to_datetime(month_pred["month"]).dt.to_period("M").astype(str)
+    month_pred["month"] = normalize_month_column(month_pred["month"])
     month_pred = month_pred[month_pred["month"] == chosen_month]
     LOGGER.info(
         "Region %s peak-fire month %s (%s cells, %s assets)",

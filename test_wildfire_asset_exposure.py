@@ -179,6 +179,18 @@ class WildfireAssetExposureTest(unittest.TestCase):
             self.assertEqual(peak_month_for_region(africa_tile), "2024-07")
             self.assertEqual(peak_month_for_region(aus_tile), "2024-01")
 
+    def test_stream_predictions_overwrites_stale_tiles(self) -> None:
+        africa = _prediction_row(6.5, 3.4, "2024-07", 0.9, binary_risk_label=1, risk_band="extreme")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            pred_path = Path(tmp_dir) / "validation_predictions.csv"
+            pd.DataFrame([africa]).to_csv(pred_path, index=False)
+            tile_dir = Path(tmp_dir) / "tiles"
+            stream_predictions_by_continent(pred_path, tile_dir)
+            stream_predictions_by_continent(pred_path, tile_dir)
+            africa_tile = pd.read_csv(tile_dir / "africa.csv")
+            self.assertEqual(len(africa_tile), 1)
+            self.assertNotIn("month", set(africa_tile["month"].astype(str)))
+
     def test_missing_predictions_file_raises_file_not_found(self) -> None:
         missing = Path("/tmp/does-not-exist-wildfire-asset-exposure.csv")
         with self.assertRaises(FileNotFoundError):

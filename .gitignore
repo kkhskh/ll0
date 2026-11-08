@@ -10,3 +10,11 @@ __pycache__/
 datasets/
 eo4wildfires.zip
 Sen1Floods11/
+wildfire-risk-mvp-*.zip
+
+# v8 holdout scores (~4 GB). Required for the overlay; never commit.
+wildfire_risk/validation_predictions.csv
+
+# Local ranked dumps from a live v8 overlay (tens of MB per continent)
+artifacts/wildfire_risk_runs/**/reports/ranked_asset_exposure_*.csv
+artifacts/wildfire_risk_runs/**/features/

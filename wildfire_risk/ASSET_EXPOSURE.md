@@ -56,11 +56,11 @@ Africa-first from `CONTINENT_ORDER`.
 
 ```bash
 python -m wildfire_risk.asset_exposure \
-  --predictions PATH \
+  --predictions wildfire_risk/validation_predictions.csv \
   --run-root artifacts/wildfire_risk_runs \
+  --run-name wildfire-asset-exposure-global-v8 \
   --scope global \
-  [--month 2024-07] \
-  [--region africa]
+  --month 2024-07
 ```
 
 `--scope california` keeps the HIFLD California path.
@@ -69,6 +69,12 @@ python -m wildfire_risk.asset_exposure \
 `validation_predictions.csv` is not on disk. It does not invent v8 scores.
 
 Default `--cache-dir` is `datasets/wildfires/assets/` (gitignored).
+
+Do **not** push `wildfire_risk/validation_predictions.csv` (~4 GB, GitHub 100 MB
+file limit). It is gitignored. Keep it local. Live ranked dumps are also
+gitignored (`artifacts/.../reports/ranked_asset_exposure_*.csv`). The PR keeps
+the synthetic demo so CI can run without the holdout file. DuckDB and `requests`
+are needed for the GeoParquet OSM fallback and HIFLD downloads.
 
 ## Asset sources
 
@@ -125,5 +131,6 @@ customer TVaR.
 - No fire spread, hourly wind, smoke, or insured loss.
 - No OSM substations outside HIFLD.
 - No app API for this overlay.
-- No live v8 `validation_predictions.csv` in this checkout, so the committed
-  run folder is the synthetic math demo, not a 2024-07 global score overlay.
+- The 4 GB v8 holdout CSV stays on the machine that trained/scored v8. GitHub
+  keeps the synthetic math demo. Run `--run-name wildfire-asset-exposure-global-v8`
+  locally against that file; do not commit the CSV or the 40–50 MB ranked dumps.
