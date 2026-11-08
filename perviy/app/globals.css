@@ -1,0 +1,699 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: "HK Grotesk";
+  src: url("/fonts/hkgrotesk-regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "HK Grotesk";
+  src: url("/fonts/hkgrotesk-medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "HK Grotesk";
+  src: url("/fonts/hkgrotesk-semibold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "HK Grotesk";
+  src: url("/fonts/hkgrotesk-bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --bg-dark: #0a0a0a;
+  --bg-medium: #121212;
+  --bg-light: #1a1a1a;
+  --bg-card: #1e1e1e;
+  --border: #333333;
+  --text: #e0e0e0;
+  --text-secondary: #aaaaaa;
+  --text-muted: #666666;
+  --accent: #4488ff;
+  --danger: #ff6b6b;
+  --ok: #8fbf8f;
+  --nav-height: 56px;
+  --toolbar-height: 48px;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg-dark);
+  color: var(--text);
+}
+
+body {
+  font-family: "HK Grotesk", "Avenir Next", "Segoe UI", sans-serif;
+  font-weight: 400;
+  letter-spacing: -0.011em;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.earth-shell {
+  height: 100dvh;
+  display: grid;
+  grid-template-rows: var(--nav-height) minmax(0, 1fr) var(--toolbar-height);
+  background: var(--bg-dark);
+  overflow: hidden;
+}
+
+.earth-nav {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 16px;
+  background: var(--bg-dark);
+  border-bottom: 1px solid var(--border);
+  z-index: 8;
+}
+
+.earth-wordmark {
+  display: flex;
+  flex-direction: column;
+  line-height: 1;
+  min-width: 148px;
+  text-decoration: none;
+  color: inherit;
+}
+
+.earth-wordmark strong {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: #ffffff;
+}
+
+.earth-wordmark span {
+  margin-top: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  color: var(--accent);
+}
+
+.earth-nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  position: relative;
+}
+
+.earth-text-button,
+.earth-icon-button,
+.earth-mode,
+.earth-reset {
+  height: 32px;
+  border: 1px solid var(--border);
+  background: var(--bg-light);
+  color: var(--text-secondary);
+  border-radius: 2px;
+}
+
+.earth-text-button,
+.earth-reset,
+.earth-mode {
+  padding: 0 10px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.earth-text-button[aria-expanded="true"],
+.earth-mode[aria-pressed="true"],
+.earth-reset:hover,
+.earth-text-button:hover,
+.earth-icon-button:hover,
+.earth-mode:hover {
+  color: var(--text);
+  border-color: #4a4a4a;
+}
+
+.earth-mode[aria-pressed="true"] {
+  color: var(--accent);
+  background: rgba(68, 136, 255, 0.14);
+  border-color: transparent;
+}
+
+.earth-icon-button {
+  width: 32px;
+  display: grid;
+  place-items: center;
+}
+
+.earth-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 280px;
+  padding: 14px;
+  background: var(--bg-medium);
+  border: 1px solid var(--border);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+  z-index: 9;
+}
+
+.earth-popover h2,
+.earth-side h2,
+.earth-inspector h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.earth-popover p,
+.earth-note,
+.earth-footnote {
+  margin: 8px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.earth-choice-row,
+.earth-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.earth-choice-row {
+  margin-top: 10px;
+}
+
+.earth-hint {
+  margin-top: 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.earth-search {
+  position: relative;
+  flex: 1;
+  max-width: 560px;
+}
+
+.earth-search input {
+  width: 100%;
+  height: 34px;
+  padding: 0 12px;
+  background: var(--bg-light);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  color: var(--text);
+}
+
+.earth-search input::placeholder {
+  color: var(--text-muted);
+}
+
+.earth-results {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--bg-medium);
+  border: 1px solid var(--border);
+  max-height: 280px;
+  overflow: auto;
+  z-index: 10;
+}
+
+.earth-results button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 2px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.earth-results button[aria-selected="true"],
+.earth-results button:hover {
+  background: rgba(68, 136, 255, 0.14);
+}
+
+.earth-results .is-muted {
+  padding: 8px 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.earth-side,
+.earth-inspector {
+  background: var(--bg-medium);
+  min-height: 0;
+  min-width: 0;
+  z-index: 4;
+}
+
+.earth-side {
+  grid-row: 2;
+  grid-column: 1;
+  border-right: 1px solid var(--border);
+}
+
+.earth-inspector {
+  grid-row: 2;
+  grid-column: 3;
+  border-left: 1px solid var(--border);
+}
+
+.earth-side-inner,
+.earth-inspector-inner {
+  height: 100%;
+  overflow: auto;
+  padding: 16px;
+}
+
+.earth-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.earth-panel-head .earth-icon-button + .earth-icon-button {
+  margin-left: 6px;
+}
+
+.earth-side.is-collapsed .earth-side-inner,
+.earth-inspector.is-collapsed .earth-inspector-inner {
+  padding: 8px 6px;
+  display: flex;
+  justify-content: center;
+}
+
+.earth-section {
+  margin-top: 22px;
+}
+
+.earth-section:first-of-type {
+  margin-top: 18px;
+}
+
+.earth-radio,
+.earth-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 2px;
+}
+
+.earth-radio[aria-checked="true"] {
+  border-color: rgba(68, 136, 255, 0.45);
+  background: rgba(68, 136, 255, 0.08);
+}
+
+.earth-radio:hover,
+.earth-toggle:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.earth-radio b,
+.earth-toggle b {
+  display: block;
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.earth-radio small,
+.earth-toggle small {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.earth-mark {
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  border: 1px solid #555;
+  border-radius: 50%;
+  flex: none;
+}
+
+.earth-radio[aria-checked="true"] .earth-mark {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 3px var(--bg-medium), inset 0 0 0 7px var(--accent);
+}
+
+.earth-switch {
+  width: 28px;
+  height: 16px;
+  margin-top: 2px;
+  border-radius: 99px;
+  border: 1px solid #555;
+  background: #222;
+  position: relative;
+  flex: none;
+}
+
+.earth-switch::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #777;
+}
+
+.earth-toggle[aria-pressed="true"] .earth-switch {
+  border-color: var(--accent);
+  background: rgba(68, 136, 255, 0.25);
+}
+
+.earth-toggle[aria-pressed="true"] .earth-switch::after {
+  left: 13px;
+  background: var(--accent);
+}
+
+.earth-slider {
+  margin-top: 12px;
+}
+
+.earth-slider label {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.earth-slider input {
+  width: 100%;
+  margin-top: 8px;
+  accent-color: var(--accent);
+}
+
+.earth-badge {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(68, 136, 255, 0.45);
+  background: rgba(68, 136, 255, 0.1);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.earth-stage {
+  grid-row: 2;
+  grid-column: 2;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  background: #050505;
+}
+
+.earth-host,
+.earth-host .cesium-viewer,
+.earth-host .cesium-viewer-cesiumWidgetContainer,
+.earth-host .cesium-widget,
+.earth-host .cesium-widget canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.earth-host {
+  position: absolute;
+  inset: 0;
+}
+
+.earth-host .cesium-viewer-toolbar,
+.earth-host .cesium-viewer-animationContainer,
+.earth-host .cesium-viewer-timelineContainer,
+.earth-host .cesium-viewer-fullscreenContainer,
+.earth-host .cesium-viewer-bottom,
+.earth-host .cesium-viewer-selectionIndicatorContainer,
+.earth-host .cesium-infoBox {
+  display: none !important;
+}
+
+.earth-credits {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 5;
+  max-width: min(460px, 46%);
+  padding: 4px 8px;
+  background: rgba(10, 10, 10, 0.78);
+  border: 1px solid #2c2c2c;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+  pointer-events: auto;
+}
+
+.earth-credits:empty {
+  display: none;
+}
+
+.earth-credits a,
+.earth-credits .cesium-credit-text {
+  color: var(--text-secondary);
+}
+
+.earth-chip {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 5;
+  padding: 6px 8px;
+  background: rgba(10, 10, 10, 0.82);
+  border: 1px solid rgba(68, 136, 255, 0.55);
+  color: var(--accent);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+}
+
+.earth-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background: rgba(5, 5, 5, 0.72);
+  text-align: center;
+}
+
+.earth-overlay h1 {
+  margin: 8px 0;
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.earth-overlay p {
+  max-width: 460px;
+  margin: 0 auto;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.earth-kicker {
+  color: var(--accent);
+  letter-spacing: 0.16em;
+  font-size: 11px;
+}
+
+.earth-facts {
+  margin: 18px 0 0;
+}
+
+.earth-facts div {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 8px;
+  padding: 10px 0;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.earth-facts dt {
+  color: var(--text-muted);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.earth-facts dd {
+  margin: 0;
+  font-size: 14px;
+}
+
+.earth-facts small {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.earth-bottom {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  background: var(--bg-dark);
+  border-top: 1px solid var(--border);
+  z-index: 7;
+}
+
+.earth-readout {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.earth-exag {
+  color: var(--accent);
+}
+
+.earth-status {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.earth-status span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 360px;
+}
+
+.earth-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex: none;
+}
+
+.earth-dot.is-ready {
+  background: var(--ok);
+}
+
+.earth-dot.is-loading,
+.earth-dot.is-info {
+  background: var(--accent);
+}
+
+.earth-dot.is-error {
+  background: var(--danger);
+}
+
+@media (max-width: 900px) {
+  .earth-shell {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .earth-stage {
+    grid-column: 1;
+  }
+
+  .earth-side,
+  .earth-inspector {
+    position: absolute;
+    top: var(--nav-height);
+    bottom: var(--toolbar-height);
+    width: min(300px, calc(100vw - 56px));
+  }
+
+  .earth-side {
+    left: 0;
+  }
+
+  .earth-inspector {
+    right: 0;
+  }
+
+  .earth-side.is-collapsed,
+  .earth-inspector.is-collapsed {
+    width: 44px;
+  }
+
+  .earth-wordmark {
+    min-width: 0;
+  }
+
+  .earth-wordmark strong {
+    letter-spacing: 0.08em;
+  }
+
+  .earth-bottom {
+    gap: 8px;
+  }
+
+  .earth-status span:last-child {
+    max-width: 140px;
+  }
+}

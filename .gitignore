@@ -18,3 +18,10 @@ wildfire_risk/validation_predictions.csv
 # Local ranked dumps from a live v8 overlay (tens of MB per continent)
 artifacts/wildfire_risk_runs/**/reports/ranked_asset_exposure_*.csv
 artifacts/wildfire_risk_runs/**/features/
+
+# Hephaelion Earth (perviy)
+node_modules/
+.next/
+.env
+.env.local
+perviy/public/cesium/
