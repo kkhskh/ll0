@@ -5,8 +5,9 @@ prediction CSV once, splits it by `evaluate.assign_continent` (Africa first in
 the processing order; Australia-before-Asia in the box list), and joins public
 power assets onto each region's own peak-fire month.
 
-The join uses `grid.assign_points_to_grid`. Lines are sampled every 0.1° and the
-cell with the highest `ranking_score` is kept. EPSG:3310 is not used.
+The join uses `grid.assign_points_to_grid`. Lines are sampled every 0.1°. Both
+`S_max` (inspect-first) and `S_len` (sample-weighted mean) are stored.
+`score_range` is not a confidence interval. EPSG:3310 is not used.
 
 Horizon is the calendar month: this month's burned-area probability. This is not
 a spread, smoke, or loss model. Missing source files are recorded by URL and the
@@ -29,13 +30,55 @@ import numpy as np
 import pandas as pd
 
 try:
+    from .asset_scores import (
+        CONCENTRATION_COLUMNS,
+        DEMO_COLUMNS,
+        RANKED_COLUMNS,
+        aggregate_cell_scores,
+        assign_inspect_rank,
+        attach_concentration,
+        empty_demo_frame,
+        empty_ranked_frame,
+        expand_asset_cells,
+        portfolio_concentration,
+        reason_for_asset_type,
+    )
     from .evaluate import CONTINENT_BOXES, CONTINENT_ORDER, assign_continent
     from .grid import GridSpec, assign_points_to_grid
 except ImportError:  # pragma: no cover - allows direct script execution
+    from asset_scores import (
+        CONCENTRATION_COLUMNS,
+        DEMO_COLUMNS,
+        RANKED_COLUMNS,
+        aggregate_cell_scores,
+        assign_inspect_rank,
+        attach_concentration,
+        empty_demo_frame,
+        empty_ranked_frame,
+        expand_asset_cells,
+        portfolio_concentration,
+        reason_for_asset_type,
+    )
     from evaluate import CONTINENT_BOXES, CONTINENT_ORDER, assign_continent
     from grid import GridSpec, assign_points_to_grid
 
 LOGGER = logging.getLogger(__name__)
+
+# Re-exported for asset_exposure.py and tests.
+__all__ = (
+    "CONCENTRATION_COLUMNS",
+    "DEFAULT_ASSET_CACHE_DIR",
+    "DEMO_COLUMNS",
+    "RANKED_COLUMNS",
+    "aggregate_cell_scores",
+    "assign_inspect_rank",
+    "attach_concentration",
+    "empty_demo_frame",
+    "empty_ranked_frame",
+    "expand_asset_cells",
+    "portfolio_concentration",
+    "reason_for_asset_type",
+)
 
 PREDICTION_COLUMNS: tuple[str, ...] = (
     "cell_id",
@@ -51,24 +94,10 @@ PREDICTION_COLUMNS: tuple[str, ...] = (
     "month_risk_percentile",
     "risk_band",
 )
-RANKED_COLUMNS: tuple[str, ...] = (
-    "asset_id",
-    "asset_name",
-    "asset_type",
-    "region",
-    "cell_id",
-    "month",
-    "predicted_probability",
-    "risk_band",
-    "month_risk_percentile",
-    "n_high_cells",
-    "n_extreme_cells",
-    "reason",
-    "asset_source",
-)
 LINE_SAMPLE_STEP_DEG = 0.1
 PREDICTION_CHUNKSIZE = 250_000
 PROCESS_ORDER: tuple[str, ...] = tuple(name for name in CONTINENT_ORDER if name != "global")
+DEFAULT_ASSET_CACHE_DIR = Path("datasets") / "wildfires" / "assets"
 
 OSM_POWER_TMM_URL = (
     "https://energydata.info/dataset/e0e878a7-7712-465d-a4c2-69b2b3518513/"
@@ -150,10 +179,6 @@ class FailureCache:
         self.path.write_text(json.dumps(self.entries, indent=2), encoding="utf-8")
 
 
-def empty_ranked_frame() -> pd.DataFrame:
-    return pd.DataFrame({column: pd.Series(dtype="object") for column in RANKED_COLUMNS})
-
-
 def require_predictions_file(predictions_path: str | Path) -> Path:
     path = Path(predictions_path)
     if not path.is_file():
@@ -181,18 +206,15 @@ def cell_ids_for_points(
     return assigned["cell_id"].astype(str).tolist()
 
 
-def unique_cell_ids_along_line(
+def sample_line_points(
     lons: Iterable[float],
     lats: Iterable[float],
-    spec: GridSpec | None = None,
     step_deg: float = LINE_SAMPLE_STEP_DEG,
-) -> list[str]:
-    """Sample a polyline every `step_deg` degrees and return unique `grid.py` cell ids."""
-    spec = spec or GridSpec()
+) -> tuple[list[float], list[float]]:
     lon_np = np.asarray(list(lons), dtype=float)
     lat_np = np.asarray(list(lats), dtype=float)
     if lon_np.size == 0 or lat_np.size == 0 or lon_np.size != lat_np.size:
-        return []
+        return [], []
     sample_lons = [float(lon_np[0])]
     sample_lats = [float(lat_np[0])]
     for lon0, lat0, lon1, lat1 in zip(lon_np[:-1], lat_np[:-1], lon_np[1:], lat_np[1:]):
@@ -204,7 +226,36 @@ def unique_cell_ids_along_line(
             t = step / n_steps
             sample_lons.append(lon0 + dlon * t)
             sample_lats.append(lat0 + dlat * t)
-    return list(dict.fromkeys(cell_ids_for_points(sample_lats, sample_lons, spec=spec)))
+    return sample_lons, sample_lats
+
+
+def cell_weights_along_line(
+    lons: Iterable[float],
+    lats: Iterable[float],
+    spec: GridSpec | None = None,
+    step_deg: float = LINE_SAMPLE_STEP_DEG,
+) -> tuple[list[str], dict[str, int]]:
+    """0.1° sample counts per cell. L(a,c) in ASSET_EXPOSURE_MATH.md eq. (5)."""
+    spec = spec or GridSpec()
+    sample_lons, sample_lats = sample_line_points(lons, lats, step_deg=step_deg)
+    if not sample_lons:
+        return [], {}
+    samples = cell_ids_for_points(sample_lats, sample_lons, spec=spec)
+    weights: dict[str, int] = {}
+    for cell_id in samples:
+        weights[cell_id] = weights.get(cell_id, 0) + 1
+    return list(weights.keys()), weights
+
+
+def unique_cell_ids_along_line(
+    lons: Iterable[float],
+    lats: Iterable[float],
+    spec: GridSpec | None = None,
+    step_deg: float = LINE_SAMPLE_STEP_DEG,
+) -> list[str]:
+    """Sample a polyline every `step_deg` degrees and return unique `grid.py` cell ids."""
+    cell_ids, _ = cell_weights_along_line(lons, lats, spec=spec, step_deg=step_deg)
+    return cell_ids
 
 
 def parse_wkt_line_parts(wkt: str) -> list[tuple[np.ndarray, np.ndarray]]:
@@ -251,28 +302,15 @@ def peak_month_for_region(pred_df: pd.DataFrame, month: str | None = None) -> st
     return str(summary.index[0])
 
 
-def reason_for_asset_type(asset_type: str) -> str:
-    if asset_type == "transmission_line":
-        return (
-            "Highest ranking_score cell among 0.1-degree samples along this line. "
-            "This is this month's burned-area probability, not spread, smoke, or loss."
-        )
-    return (
-        "Asset sits in this cell. This is this month's burned-area probability, "
-        "not spread, smoke, or loss."
-    )
-
-
 def overlay_assets_on_predictions(
     assets: pd.DataFrame,
     predictions: pd.DataFrame,
     spec: GridSpec | None = None,
 ) -> pd.DataFrame:
-    """Pandas grid join: keep the highest ranking_score cell per asset.
+    """Pandas grid join implementing ASSET_EXPOSURE_MATH.md eqs. (6)–(11).
 
-    Works without geopandas. `assets` must include `cell_ids` (list of grid.py ids)
-    or a single `cell_id`. Assets that miss the prediction land grid are dropped,
-    not scored by invention.
+    Works without geopandas. Assets that miss the prediction land grid are
+    dropped, not scored by invention.
     """
     spec = spec or GridSpec()
     if assets is None or assets.empty or predictions is None or predictions.empty:
@@ -283,10 +321,12 @@ def overlay_assets_on_predictions(
         if "cell_id" in working.columns:
             working["cell_ids"] = working["cell_id"].map(lambda value: [value] if pd.notna(value) else [])
         elif {"lat", "lon"}.issubset(working.columns):
-            working["cell_ids"] = [
+            cells = [
                 cell_ids_for_points([lat], [lon], spec=spec)
                 for lat, lon in zip(working["lat"], working["lon"])
             ]
+            working["cell_ids"] = cells
+            working["cell_weights"] = [{cell: 1 for cell in row} for row in cells]
         else:
             raise ValueError("Assets need cell_ids, cell_id, or lat/lon to join the 0.5° grid")
 
@@ -309,52 +349,14 @@ def overlay_assets_on_predictions(
     pred_lookup = pred[score_cols].copy()
     pred_lookup["cell_id"] = pred_lookup["cell_id"].astype(str)
 
-    exploded = working.explode("cell_ids", ignore_index=True).rename(columns={"cell_ids": "cell_id"})
-    exploded = exploded[exploded["cell_id"].notna() & (exploded["cell_id"].astype(str) != "")]
+    exploded = expand_asset_cells(working)
     if exploded.empty:
         return empty_ranked_frame()
     exploded["cell_id"] = exploded["cell_id"].astype(str)
     joined = exploded.merge(pred_lookup, on="cell_id", how="inner")
     if joined.empty:
         return empty_ranked_frame()
-    if "ranking_score" not in joined.columns:
-        raise ValueError("Prediction table needs ranking_score")
-
-    joined["ranking_score"] = pd.to_numeric(joined["ranking_score"], errors="coerce")
-    joined = joined.dropna(subset=["ranking_score"])
-    if joined.empty:
-        return empty_ranked_frame()
-
-    counts = joined.groupby("asset_id", sort=False).agg(
-        n_high_cells=("risk_band", lambda series: int((series.astype(str) == "high").sum())),
-        n_extreme_cells=("risk_band", lambda series: int((series.astype(str) == "extreme").sum())),
-    )
-    best_idx = joined.groupby("asset_id", sort=False)["ranking_score"].idxmax()
-    best = joined.loc[best_idx].copy()
-    best = best.merge(counts, on="asset_id", how="left")
-    if "region" not in best.columns:
-        best["region"] = "global"
-    if "asset_name" not in best.columns:
-        best["asset_name"] = best["asset_id"]
-    if "asset_type" not in best.columns:
-        best["asset_type"] = "unknown"
-    if "asset_source" not in best.columns:
-        best["asset_source"] = "unknown"
-    best["reason"] = best["asset_type"].map(reason_for_asset_type)
-    best["n_high_cells"] = best["n_high_cells"].fillna(0).astype(int)
-    best["n_extreme_cells"] = best["n_extreme_cells"].fillna(0).astype(int)
-    best["predicted_probability"] = pd.to_numeric(best["predicted_probability"], errors="coerce")
-    best["month_risk_percentile"] = pd.to_numeric(best["month_risk_percentile"], errors="coerce")
-    ranked = best.loc[:, [column for column in RANKED_COLUMNS if column in best.columns]].copy()
-    for column in RANKED_COLUMNS:
-        if column not in ranked.columns:
-            ranked[column] = pd.NA
-    ranked = ranked.loc[:, list(RANKED_COLUMNS)]
-    return ranked.sort_values(
-        ["predicted_probability", "n_extreme_cells", "n_high_cells"],
-        ascending=False,
-        kind="mergesort",
-    ).reset_index(drop=True)
+    return aggregate_cell_scores(joined)
 
 
 def stream_predictions_by_continent(
@@ -498,7 +500,7 @@ def _shapefile_lines(shp_path: Path, spec: GridSpec | None = None) -> pd.DataFra
         shape = shape_record.shape
         record = shape_record.record
         parts = list(shape.parts) + [len(shape.points)]
-        cell_ids: list[str] = []
+        weights: dict[str, int] = {}
         first_lon: float | None = None
         first_lat: float | None = None
         for start, end in zip(parts, parts[1:]):
@@ -509,8 +511,10 @@ def _shapefile_lines(shp_path: Path, spec: GridSpec | None = None) -> pd.DataFra
             lats = [xy[1] for xy in points]
             if first_lon is None:
                 first_lon, first_lat = float(lons[0]), float(lats[0])
-            cell_ids.extend(unique_cell_ids_along_line(lons, lats, spec=spec))
-        cell_ids = list(dict.fromkeys(cell_ids))
+            _, part_weights = cell_weights_along_line(lons, lats, spec=spec)
+            for cell_id, count in part_weights.items():
+                weights[cell_id] = weights.get(cell_id, 0) + count
+        cell_ids = list(weights.keys())
         if not cell_ids or first_lat is None or first_lon is None:
             continue
         name = ""
@@ -530,6 +534,7 @@ def _shapefile_lines(shp_path: Path, spec: GridSpec | None = None) -> pd.DataFra
                 "asset_name": name or asset_id,
                 "asset_type": "transmission_line",
                 "cell_ids": cell_ids,
+                "cell_weights": weights,
                 "asset_source": "world_bank_osm_power_tmm",
                 "region": region,
                 "lat": first_lat,
@@ -580,8 +585,15 @@ def load_osm_parquet_lines_for_bbox(
     bbox: tuple[float, float, float, float],
     spec: GridSpec | None = None,
     url: str = OSM_POWER_PARQUET_URL,
+    cache_dir: Path | None = None,
+    region: str | None = None,
+    batch_size: int = 20_000,
 ) -> tuple[pd.DataFrame, SourceStatus]:
-    """ODbL OSM transmission lines (power=line) for one lat/lon box. No World Bank retry."""
+    """ODbL OSM power=line features for one lat/lon box. Bbox query, not a full-planet load.
+
+    Continent extracts are cached under datasets/wildfires/assets/ as processed
+    cell weights, not the 509 MB parquet. World Bank 403 is never retried here.
+    """
     spec = spec or GridSpec()
     lat_min, lat_max, lon_min, lon_max = bbox
     status = SourceStatus(
@@ -589,7 +601,19 @@ def load_osm_parquet_lines_for_bbox(
         url=url,
         status="ok",
         license=OSM_POWER_PARQUET_LICENSE,
+        region=region or "global",
     )
+    cache_path = None
+    if cache_dir is not None and region:
+        cache_dir = Path(cache_dir)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = cache_dir / f"osm_power_line_{region}.pkl"
+        if cache_path.is_file() and cache_path.stat().st_size > 0:
+            assets = pd.read_pickle(cache_path)
+            status.n_assets = int(len(assets))
+            status.note = f"Cached ODbL OSM lines for {region}: {len(assets)} (ODbL 1.0, © OpenStreetMap contributors)"
+            status.path = str(cache_path)
+            return assets, status
     try:
         import duckdb
     except ImportError:
@@ -604,39 +628,56 @@ def load_osm_parquet_lines_for_bbox(
           AND bbox.ymin <= ? AND bbox.ymax >= ?
           AND type = 'line'
           AND coalesce(lifecycle, 'active') IN ('active', 'construction')
+        LIMIT ? OFFSET ?
     """
+    rows: list[dict[str, Any]] = []
+    offset = 0
     try:
         con = duckdb.connect()
         con.execute("INSTALL spatial; LOAD spatial; INSTALL httpfs; LOAD httpfs;")
-        frame = con.execute(sql, [url, lon_max, lon_min, lat_max, lat_min]).fetchdf()
+        while True:
+            frame = con.execute(
+                sql, [url, lon_max, lon_min, lat_max, lat_min, batch_size, offset]
+            ).fetchdf()
+            if frame.empty:
+                break
+            for record in frame.itertuples(index=False):
+                parts = parse_wkt_line_parts(getattr(record, "wkt", "") or "")
+                weights: dict[str, int] = {}
+                for lons, lats in parts:
+                    _, part_weights = cell_weights_along_line(lons, lats, spec=spec)
+                    for cell_id, count in part_weights.items():
+                        weights[cell_id] = weights.get(cell_id, 0) + count
+                if not weights:
+                    continue
+                osm_id = getattr(record, "osm_id")
+                name = getattr(record, "name", None) or getattr(record, "operator", None) or f"osm_way_{osm_id}"
+                rows.append(
+                    {
+                        "asset_id": f"osm_line_{osm_id}",
+                        "asset_name": str(name),
+                        "asset_type": "transmission_line",
+                        "cell_ids": list(weights.keys()),
+                        "cell_weights": weights,
+                        "asset_source": "osm_geofabrik_power_line_parquet",
+                    }
+                )
+            if len(frame) < batch_size:
+                break
+            offset += len(frame)
     except Exception as exc:  # noqa: BLE001
         status.status = "missing"
         status.note = f"{type(exc).__name__}: {exc}"
         return pd.DataFrame(), status
-    rows: list[dict[str, Any]] = []
-    for record in frame.itertuples(index=False):
-        parts = parse_wkt_line_parts(getattr(record, "wkt", "") or "")
-        cell_ids: list[str] = []
-        for lons, lats in parts:
-            cell_ids.extend(unique_cell_ids_along_line(lons, lats, spec=spec))
-        cell_ids = list(dict.fromkeys(cell_ids))
-        if not cell_ids:
-            continue
-        osm_id = getattr(record, "osm_id")
-        name = getattr(record, "name", None) or getattr(record, "operator", None) or f"osm_way_{osm_id}"
-        rows.append(
-            {
-                "asset_id": f"osm_line_{osm_id}",
-                "asset_name": str(name),
-                "asset_type": "transmission_line",
-                "cell_ids": cell_ids,
-                "asset_source": "osm_geofabrik_power_line_parquet",
-            }
-        )
     assets = pd.DataFrame(rows)
+    if cache_path is not None and not assets.empty:
+        assets.to_pickle(cache_path)
+        status.path = str(cache_path)
     status.n_assets = int(len(assets))
     status.note = (
-        f"ODbL OSM power=line features in bbox lat[{lat_min},{lat_max}] lon[{lon_min},{lon_max}]: {len(assets)}"
+        f"ODbL OSM power=line (© OpenStreetMap contributors) in bbox "
+        f"lat[{lat_min},{lat_max}] lon[{lon_min},{lon_max}]: {len(assets)}. "
+        "Bbox-filtered; the 509 MB parquet is not loaded into RAM as a whole."
     )
     return assets, status
 
@@ -686,6 +727,7 @@ def load_gppd_plants(
     assigned["asset_type"] = "plant"
     assigned["asset_source"] = "wri_gppd"
     assigned["cell_ids"] = assigned["cell_id"].map(lambda value: [str(value)])
+    assigned["cell_weights"] = assigned["cell_id"].map(lambda value: {str(value): 1})
     assigned["region"] = assign_continent(assigned["lat"], assigned["lon"])
     status.n_assets = int(len(assigned))
     status.note = f"Loaded {len(assigned)} WRI GPPD generation sites (asset_type=plant, not substations)"
@@ -769,24 +811,29 @@ def _geojson_feature_to_asset(
     props = feature.get("properties") or {}
     geom_type = geometry.get("type")
     coordinates = geometry.get("coordinates")
-    cell_ids: list[str] = []
+    weights: dict[str, int] = {}
     if geom_type == "Point" and coordinates:
         cell_ids = cell_ids_for_points([coordinates[1]], [coordinates[0]], spec=spec)
+        weights = {cell: 1 for cell in cell_ids}
     elif geom_type == "LineString" and coordinates:
         lons = [xy[0] for xy in coordinates]
         lats = [xy[1] for xy in coordinates]
-        cell_ids = unique_cell_ids_along_line(lons, lats, spec=spec)
+        cell_ids, weights = cell_weights_along_line(lons, lats, spec=spec)
     elif geom_type == "MultiLineString" and coordinates:
-        collected: list[str] = []
         for part in coordinates:
             lons = [xy[0] for xy in part]
             lats = [xy[1] for xy in part]
-            collected.extend(unique_cell_ids_along_line(lons, lats, spec=spec))
-        cell_ids = list(dict.fromkeys(collected))
+            _, part_weights = cell_weights_along_line(lons, lats, spec=spec)
+            for cell_id, count in part_weights.items():
+                weights[cell_id] = weights.get(cell_id, 0) + count
+        cell_ids = list(weights.keys())
     elif geom_type == "MultiPoint" and coordinates:
         lats = [xy[1] for xy in coordinates]
         lons = [xy[0] for xy in coordinates]
         cell_ids = list(dict.fromkeys(cell_ids_for_points(lats, lons, spec=spec)))
+        weights = {cell: 1 for cell in cell_ids}
+    else:
+        cell_ids = []
     if not cell_ids:
         return None
     raw_id = props.get("ID") or props.get("OBJECTID") or props.get("FID") or index
@@ -802,6 +849,7 @@ def _geojson_feature_to_asset(
         "asset_name": str(name),
         "asset_type": asset_type,
         "cell_ids": cell_ids,
+        "cell_weights": weights,
         "asset_source": asset_source,
     }
 
@@ -891,7 +939,9 @@ def collect_region_assets(
             lines["region"] = region
             frames.append(lines)
     elif bbox is not None:
-        parquet_lines, parquet_status = load_osm_parquet_lines_for_bbox(bbox, spec=spec)
+        parquet_lines, parquet_status = load_osm_parquet_lines_for_bbox(
+            bbox, spec=spec, cache_dir=cache_dir, region=region
+        )
         parquet_status.region = region
         reports.append(parquet_status)
         if not parquet_lines.empty:
@@ -932,9 +982,14 @@ def collect_region_assets(
 
 
 def build_demo_portfolio(ranked: pd.DataFrame, limit: int = 40) -> pd.DataFrame:
-    """Public-data demo book, not a customer book. Named plants first, then other assets."""
+    """Public-data demo book, not a customer book. Named plants first, then other assets.
+
+    high_or_extreme_share and herfindahl_top_cells are book-level (eqs. 12–13),
+    repeated on each row so they exist on the CSV. Not customer TVaR.
+    """
     if ranked.empty:
-        return empty_ranked_frame()
+        empty = empty_ranked_frame()
+        return attach_concentration(empty)
     named = ranked[ranked["asset_name"].astype(str).str.len() > 0].copy()
     plants = named[named["asset_type"] == "plant"]
     hot = plants[plants["risk_band"].isin(["high", "extreme"])]
@@ -942,7 +997,107 @@ def build_demo_portfolio(ranked: pd.DataFrame, limit: int = 40) -> pd.DataFrame:
         [hot, plants[~plants["asset_id"].isin(hot["asset_id"])], named[~named["asset_id"].isin(plants["asset_id"])]],
         ignore_index=True,
     ).drop_duplicates(subset=["asset_id"])
-    return ordered.head(limit).reset_index(drop=True)
+    return attach_concentration(ordered.head(limit).reset_index(drop=True))
+
+
+def _synthetic_cell_row(
+    lat: float,
+    lon: float,
+    month: str,
+    ranking_score: float,
+    risk_band: str,
+    spec: GridSpec,
+    binary_risk_label: int = 0,
+) -> dict[str, Any]:
+    assigned = assign_points_to_grid(
+        pd.DataFrame({"lat": [lat], "lon": [lon]}),
+        spec,
+        lat_col="lat",
+        lon_col="lon",
+    ).iloc[0]
+    year, month_num = month.split("-")
+    score = float(ranking_score)
+    return {
+        "cell_id": str(assigned["cell_id"]),
+        "month": month,
+        "year": int(year),
+        "month_num": int(month_num),
+        "lat_center": float(lat),
+        "lon_center": float(lon),
+        "binary_risk_label": int(binary_risk_label),
+        "predicted_probability": score,
+        "ranking_score": score,
+        "risk_percentile": score,
+        "month_risk_percentile": score,
+        "risk_band": risk_band,
+    }
+
+
+def synthetic_demo_inputs(spec: GridSpec | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Labeled synthetic AU/AF/NA assets and cell scores. Not v8. Offline math demo only."""
+    spec = spec or GridSpec()
+    africa_low = _synthetic_cell_row(6.75, 3.25, "2024-07", 0.20, "elevated", spec)
+    africa_high = _synthetic_cell_row(6.75, 3.75, "2024-07", 0.91, "extreme", spec, binary_risk_label=1)
+    africa_plant = _synthetic_cell_row(9.00, 7.00, "2024-07", 0.88, "high", spec, binary_risk_label=1)
+    africa_jan = _synthetic_cell_row(9.00, 7.00, "2024-01", 0.10, "monitor", spec)
+    aus_plant = _synthetic_cell_row(-33.90, 151.20, "2024-01", 0.80, "high", spec, binary_risk_label=1)
+    aus_july = _synthetic_cell_row(-33.90, 151.20, "2024-07", 0.05, "monitor", spec)
+    na_plant = _synthetic_cell_row(37.40, -122.10, "2024-09", 0.72, "high", spec, binary_risk_label=1)
+    na_jan = _synthetic_cell_row(37.40, -122.10, "2024-01", 0.08, "monitor", spec)
+    predictions = pd.DataFrame(
+        [africa_low, africa_high, africa_plant, africa_jan, aus_plant, aus_july, na_plant, na_jan]
+    )
+    line_low, line_high = africa_low["cell_id"], africa_high["cell_id"]
+    assets = pd.DataFrame(
+        [
+            {
+                "asset_id": "synth_line_af_90_10",
+                "asset_name": "SYNTHETIC Africa 90/10 line",
+                "asset_type": "transmission_line",
+                "region": "africa",
+                "cell_ids": [line_low, line_high],
+                "cell_weights": {line_low: 90, line_high: 10},
+                "asset_source": "synthetic",
+            },
+            {
+                "asset_id": "synth_plant_lagos",
+                "asset_name": "SYNTHETIC Lagos plant",
+                "asset_type": "plant",
+                "region": "africa",
+                "cell_ids": [africa_plant["cell_id"]],
+                "cell_weights": {africa_plant["cell_id"]: 1},
+                "asset_source": "synthetic",
+            },
+            {
+                "asset_id": "synth_plant_sydney",
+                "asset_name": "SYNTHETIC Sydney plant",
+                "asset_type": "plant",
+                "region": "australia",
+                "cell_ids": [aus_plant["cell_id"]],
+                "cell_weights": {aus_plant["cell_id"]: 1},
+                "asset_source": "synthetic",
+            },
+            {
+                "asset_id": "synth_plant_bay",
+                "asset_name": "SYNTHETIC Bay Area plant",
+                "asset_type": "plant",
+                "region": "north_america",
+                "cell_ids": [na_plant["cell_id"]],
+                "cell_weights": {na_plant["cell_id"]: 1},
+                "asset_source": "synthetic",
+            },
+            {
+                "asset_id": "synth_sub_bay",
+                "asset_name": "SYNTHETIC Bay Area substation",
+                "asset_type": "substation",
+                "region": "north_america",
+                "cell_ids": [na_plant["cell_id"]],
+                "cell_weights": {na_plant["cell_id"]: 1},
+                "asset_source": "synthetic",
+            },
+        ]
+    )
+    return predictions, assets
 
 
 def overlay_region_predictions(

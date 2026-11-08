@@ -30,6 +30,8 @@ import pandas as pd
 try:
     from .asset_scale import (
         CALIFORNIA_BBOX,
+        DEFAULT_ASSET_CACHE_DIR,
+        DEMO_COLUMNS,
         GPPD_LICENSE,
         GPPD_URL,
         HIFLD_LICENSE,
@@ -42,8 +44,10 @@ try:
         RANKED_COLUMNS,
         SourceStatus,
         FailureCache,
+        assign_inspect_rank,
         build_demo_portfolio,
         collect_region_assets,
+        empty_demo_frame,
         empty_ranked_frame,
         iter_process_regions,
         load_gppd_plants,
@@ -53,12 +57,15 @@ try:
         peak_month_for_region,
         require_predictions_file,
         stream_predictions_by_continent,
+        synthetic_demo_inputs,
     )
     from .grid import GridSpec
     from .run_artifacts import create_run_layout, write_stage_manifest
 except ImportError:  # pragma: no cover - allows direct script execution
     from asset_scale import (
         CALIFORNIA_BBOX,
+        DEFAULT_ASSET_CACHE_DIR,
+        DEMO_COLUMNS,
         GPPD_LICENSE,
         GPPD_URL,
         HIFLD_LICENSE,
@@ -71,8 +78,10 @@ except ImportError:  # pragma: no cover - allows direct script execution
         RANKED_COLUMNS,
         SourceStatus,
         FailureCache,
+        assign_inspect_rank,
         build_demo_portfolio,
         collect_region_assets,
+        empty_demo_frame,
         empty_ranked_frame,
         iter_process_regions,
         load_gppd_plants,
@@ -82,6 +91,7 @@ except ImportError:  # pragma: no cover - allows direct script execution
         peak_month_for_region,
         require_predictions_file,
         stream_predictions_by_continent,
+        synthetic_demo_inputs,
     )
     from grid import GridSpec
     from run_artifacts import create_run_layout, write_stage_manifest
@@ -107,7 +117,8 @@ portfolio, a utility's GIS, or a loss run.
 - Scores come from the existing v8 global 0.5° monthly burned-area model
   (train 2020–2023, holdout 2024–2025). This overlay does not retrain v8 or v9.
 - Join uses `wildfire_risk/grid.py` (same formula as `assign_points_to_grid`).
-  Lines are sampled every 0.1°. The cell with the highest `ranking_score` is kept.
+  Lines are sampled every 0.1°. ranking_score is S_max; length_weighted_score is
+  S_len. score_range is not a confidence interval. See ASSET_EXPOSURE_MATH.md.
 - Each continent keeps its own peak-fire month so Africa does not overwrite
   Australia. Pass `--month YYYY-MM` to force one month.
 
@@ -140,8 +151,16 @@ HIFLD substations:
 
 ## Ranked columns
 
-asset_id, asset_name, asset_type, region, cell_id, month, predicted_probability,
-risk_band, month_risk_percentile, n_high_cells, n_extreme_cells, reason, asset_source
+See `wildfire_risk/ASSET_EXPOSURE_MATH.md` for numbered equations.
+
+asset_id, asset_name, asset_type, region, cell_id, month, ranking_score (S_max),
+length_weighted_score (S_len), predicted_probability, calibrated_probability,
+risk_band, month_risk_percentile, n_cells, n_high_cells, n_extreme_cells,
+extreme_cell_fraction, score_range (U, not a CI), score_std, inspect_rank,
+reason, asset_source.
+
+Demo book extra columns: high_or_extreme_share, herfindahl_top_cells, n_demo_assets.
+Those are concentration of this public demo book, not customer TVaR.
 """
 
 
@@ -223,10 +242,25 @@ def render_region_map(
     return output_path
 
 
-def _write_ranked(path: Path, ranked: pd.DataFrame) -> Path:
-    frame = ranked.loc[:, list(RANKED_COLUMNS)] if not ranked.empty else empty_ranked_frame()
-    frame.to_csv(path, index=False)
+def _write_table(path: Path, frame: pd.DataFrame, columns: tuple[str, ...]) -> Path:
+    if frame is None or frame.empty:
+        out = pd.DataFrame({column: pd.Series(dtype="object") for column in columns})
+    else:
+        out = frame.copy()
+        for column in columns:
+            if column not in out.columns:
+                out[column] = pd.NA
+        out = out.loc[:, list(columns)]
+    out.to_csv(path, index=False)
     return path
+
+
+def _write_ranked(path: Path, ranked: pd.DataFrame) -> Path:
+    return _write_table(path, ranked, RANKED_COLUMNS)
+
+
+def _write_demo(path: Path, demo: pd.DataFrame) -> Path:
+    return _write_table(path, demo if demo is not None else empty_demo_frame(), DEMO_COLUMNS)
 
 
 def run_california_exposure(
@@ -275,7 +309,7 @@ def run_california_exposure(
             california_pred, assets, region="california", month=month, spec=spec
         )
     ranked_path = _write_ranked(layout.reports_dir / "ranked_asset_exposure_california.csv", ranked)
-    demo_path = _write_ranked(layout.reports_dir / "demo_utility_portfolio_california.csv", build_demo_portfolio(ranked))
+    demo_path = _write_demo(layout.reports_dir / "demo_utility_portfolio_california.csv", build_demo_portfolio(ranked))
     coverage = coverage_frame(reports)
     coverage_path = layout.reports_dir / "coverage_report.csv"
     coverage.to_csv(coverage_path, index=False)
@@ -376,13 +410,9 @@ def run_global_exposure(
         pd.concat(ranked_parts, ignore_index=True) if ranked_parts else empty_ranked_frame()
     )
     if not global_ranked.empty:
-        global_ranked = global_ranked.sort_values(
-            ["predicted_probability", "n_extreme_cells", "n_high_cells"],
-            ascending=False,
-            kind="mergesort",
-        ).reset_index(drop=True)
+        global_ranked = assign_inspect_rank(global_ranked)
     global_path = _write_ranked(layout.reports_dir / "ranked_asset_exposure_global.csv", global_ranked)
-    demo_path = _write_ranked(
+    demo_path = _write_demo(
         layout.reports_dir / "demo_utility_portfolio_global.csv",
         build_demo_portfolio(global_ranked),
     )
@@ -413,6 +443,115 @@ def run_global_exposure(
     }
 
 
+def write_synthetic_demo_run(
+    run_root: str | Path,
+    run_name: str = "wildfire-asset-exposure-global",
+) -> dict[str, Any]:
+    """Write a SYNTHETIC run folder with math columns. Not v8 scores. Predictions were absent."""
+    layout = create_run_layout(run_root, run_name=run_name)
+    predictions, assets = synthetic_demo_inputs()
+    predictions = predictions.copy()
+    try:
+        from .evaluate import assign_continent
+    except ImportError:  # pragma: no cover
+        from evaluate import assign_continent
+    predictions["continent"] = assign_continent(predictions["lat_center"], predictions["lon_center"])
+    ranked_parts: list[pd.DataFrame] = []
+    ranked_paths: list[Path] = []
+    map_paths: list[Path] = []
+    region_months: dict[str, str] = {}
+    for region, group in assets.groupby("region", sort=False):
+        pred = predictions[predictions["continent"] == region].copy()
+        ranked, chosen_month = overlay_region_predictions(pred, group, region=str(region))
+        region_months[str(region)] = chosen_month
+        ranked_path = _write_ranked(layout.reports_dir / f"ranked_asset_exposure_{region}.csv", ranked)
+        ranked_paths.append(ranked_path)
+        if not ranked.empty:
+            ranked_parts.append(ranked)
+        month_pred = pred[pred["month"].astype(str) == str(chosen_month)]
+        map_paths.append(
+            render_region_map(
+                ranked,
+                month_pred,
+                layout.maps_dir / f"asset_exposure_{region}_{chosen_month or 'no_month'}.png",
+                region=str(region),
+                month=chosen_month or "n/a",
+            )
+        )
+    global_ranked = assign_inspect_rank(pd.concat(ranked_parts, ignore_index=True)) if ranked_parts else empty_ranked_frame()
+    global_path = _write_ranked(layout.reports_dir / "ranked_asset_exposure_global.csv", global_ranked)
+    demo = build_demo_portfolio(global_ranked)
+    demo_path = _write_demo(layout.reports_dir / "demo_utility_portfolio_global.csv", demo)
+    coverage = pd.DataFrame(
+        [
+            {
+                "region": "global",
+                "source": "synthetic_demo",
+                "url": "",
+                "status": "synthetic",
+                "n_assets": int(len(global_ranked)),
+                "license": "not a public GIS extract",
+                "note": (
+                    "SYNTHETIC. v8 validation_predictions.csv was not on disk. "
+                    "These rows demonstrate S_max, S_len, U(a), N_ext, and demo-book H. "
+                    "They are not burned-area forecasts."
+                ),
+            }
+        ]
+    )
+    coverage_path = layout.reports_dir / "coverage_report.csv"
+    coverage.to_csv(coverage_path, index=False)
+    month_lines = "\n".join(f"- {name}: {value}" for name, value in region_months.items()) or "- none"
+    readme_path = write_readme(
+        layout.root / "README.md",
+        scope="global",
+        extra=(
+            "**SYNTHETIC DEMO.** v8 `validation_predictions.csv` was absent. "
+            "Do not treat these scores as this month's burned-area probability from v8. "
+            "The columns implement ASSET_EXPOSURE_MATH.md eqs. (6)–(13) on labeled toy assets "
+            "in Africa, Australia, and North America.\n\n"
+            f"Per-region months used by the toy overlay:\n{month_lines}\n"
+        ),
+    )
+    write_stage_manifest(
+        layout=layout,
+        stage_name="asset_exposure",
+        config={
+            "predictions_path": "SYNTHETIC (validation_predictions.csv absent)",
+            "scope": "global",
+            "synthetic": True,
+            "grid": "wildfire_risk.grid.GridSpec 0.5 degree, not EPSG:3310",
+            "horizon": "calendar month burned-area probability (formulas only; scores are synthetic)",
+            "not_modeled": ["spread", "smoke", "dollar_losses", "customer_tvar"],
+            "formulas": "ASSET_EXPOSURE_MATH.md eqs. (6)-(13); score_range is not a confidence interval",
+            "demo_book": "synthetic public-style book, not a customer book; H is not TVaR",
+        },
+        artifacts={
+            "ranked_csv": [str(path) for path in ranked_paths] + [str(global_path)],
+            "demo_portfolio": str(demo_path),
+            "coverage_report": str(coverage_path),
+            "maps": [str(path) for path in map_paths],
+            "readme": str(readme_path),
+        },
+        summary={
+            "n_ranked_assets": int(len(global_ranked)),
+            "region_months": region_months,
+            "synthetic": True,
+        },
+    )
+    return {
+        "run_root": str(layout.root),
+        "ranked_paths": [str(path) for path in ranked_paths] + [str(global_path)],
+        "demo_path": str(demo_path),
+        "coverage_path": str(coverage_path),
+        "map_paths": [str(path) for path in map_paths],
+        "readme_path": str(readme_path),
+        "n_assets": int(len(global_ranked)),
+        "region_months": region_months,
+        "synthetic": True,
+    }
+
+
 def run_asset_exposure(
     predictions_path: str | Path,
     run_root: str | Path,
@@ -429,7 +568,7 @@ def run_asset_exposure(
         "wildfire-asset-exposure-global" if scope == "global" else "wildfire-asset-exposure-california"
     )
     layout = create_run_layout(run_root, run_name=resolved_name)
-    cache_dir = Path(cache_dir) if cache_dir is not None else Path("datasets") / "wildfire_assets"
+    cache_dir = Path(cache_dir) if cache_dir is not None else DEFAULT_ASSET_CACHE_DIR
     cache_dir.mkdir(parents=True, exist_ok=True)
     failure_cache = FailureCache.load(cache_dir / "source_fetch_failures.json")
     spec = GridSpec()
@@ -465,8 +604,10 @@ def run_asset_exposure(
             "region": region,
             "grid": "wildfire_risk.grid.GridSpec 0.5 degree, not EPSG:3310",
             "horizon": "calendar month burned-area probability",
-            "not_modeled": ["spread", "smoke", "dollar_losses"],
-            "demo_book": "public assets, not a customer book",
+            "asset_cache_dir": str(cache_dir),
+            "not_modeled": ["spread", "smoke", "dollar_losses", "customer_tvar"],
+            "demo_book": "public assets, not a customer book; H is demo-book Herfindahl, not TVaR",
+            "formulas": "ASSET_EXPOSURE_MATH.md eqs. (6)-(13); score_range is not a confidence interval",
             "sources": {
                 "osm_power_tmm": OSM_POWER_TMM_URL,
                 "osm_power_tmm_license": OSM_POWER_TMM_LICENSE,
@@ -503,7 +644,7 @@ def main() -> None:
             "Reports this month's burned-area probability. Does not simulate spread, smoke, or loss."
         )
     )
-    parser.add_argument("--predictions", required=True, help="validation_predictions.csv from train_baseline.py")
+    parser.add_argument("--predictions", help="validation_predictions.csv from train_baseline.py")
     parser.add_argument("--run-root", default="artifacts/wildfire_risk_runs", help="Parent folder for a new run layout")
     parser.add_argument(
         "--scope",
@@ -514,9 +655,28 @@ def main() -> None:
     parser.add_argument("--month", help="Optional YYYY-MM. Default is each region's own peak-fire month")
     parser.add_argument("--region", help="Optional single continent for --scope global (e.g. africa)")
     parser.add_argument("--run-name", help="Folder name inside --run-root")
-    parser.add_argument("--cache-dir", help="Where to store downloaded asset files and the 403 failure cache")
+    parser.add_argument(
+        "--cache-dir",
+        help="Downloaded assets and the 403 failure cache (default datasets/wildfires/assets/)",
+    )
+    parser.add_argument(
+        "--synthetic-demo",
+        action="store_true",
+        help="Write a labeled SYNTHETIC run with math columns. Does not invent v8 scores.",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+    if args.synthetic_demo:
+        result = write_synthetic_demo_run(
+            run_root=args.run_root,
+            run_name=args.run_name or "wildfire-asset-exposure-global",
+        )
+        print(f"Wrote SYNTHETIC asset exposure demo to {result['run_root']}")
+        print(f"Ranked assets: {result.get('n_assets', 0)}")
+        print(f"Coverage: {result.get('coverage_path')}")
+        return
+    if not args.predictions:
+        parser.error("--predictions is required unless --synthetic-demo")
     result = run_asset_exposure(
         predictions_path=args.predictions,
         run_root=args.run_root,

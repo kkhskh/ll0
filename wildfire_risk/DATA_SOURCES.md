@@ -71,5 +71,7 @@ and accept the agreement, then re-run the subcommand.
 
 Worldwide wildfire asset exposure joins public power plants and transmission
 lines onto the existing v8 monthly burned-area scores. It does not retrain the
-model. Sources, licenses, and the World Bank zip HTTP 403 are recorded in
-`ASSET_EXPOSURE.md`.
+model. Sources, licenses, the World Bank zip HTTP 403, and the ODbL GeoParquet
+fallback (bbox-streamed, cached under `datasets/wildfires/assets/`) are recorded
+in `ASSET_EXPOSURE.md`. Numbered formulas and citations are in
+`ASSET_EXPOSURE_MATH.md`.

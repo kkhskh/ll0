@@ -13,12 +13,16 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from wildfire_risk.asset_exposure import run_asset_exposure
+from wildfire_risk.asset_exposure import run_asset_exposure, write_synthetic_demo_run
 from wildfire_risk.asset_scale import (
+    DEMO_COLUMNS,
     FailureCache,
     PROCESS_ORDER,
     RANKED_COLUMNS,
     cell_ids_for_points,
+    cell_weights_along_line,
+    download_url,
+    load_osm_parquet_lines_for_bbox,
     overlay_assets_on_predictions,
     overlay_region_predictions,
     peak_month_for_region,
@@ -26,6 +30,7 @@ from wildfire_risk.asset_scale import (
     stream_predictions_by_continent,
     unique_cell_ids_along_line,
 )
+from wildfire_risk.asset_scores import portfolio_concentration
 from wildfire_risk.evaluate import assign_continent
 from wildfire_risk.grid import GridSpec, assign_points_to_grid
 
@@ -113,6 +118,10 @@ class WildfireAssetExposureTest(unittest.TestCase):
         self.assertGreaterEqual(int(ranked.iloc[0]["n_high_cells"]), 0)
         self.assertEqual(list(ranked.columns), list(RANKED_COLUMNS))
         self.assertIn("this month's burned-area probability", ranked.iloc[0]["reason"])
+        self.assertIn("length_weighted_score", ranked.columns)
+        self.assertIn("score_range", ranked.columns)
+        self.assertIn("inspect_rank", ranked.columns)
+        self.assertGreater(float(ranked.iloc[0]["score_range"]), 0.0)
 
     def test_per_region_peak_month_does_not_let_africa_overwrite_australia(self) -> None:
         africa_july = _prediction_row(6.5, 3.4, "2024-07", 0.95, binary_risk_label=1, risk_band="extreme")
@@ -260,6 +269,11 @@ class WildfireAssetExposureTest(unittest.TestCase):
             months = dict(zip(global_ranked["asset_id"], global_ranked["month"]))
             self.assertEqual(months["WRI1000001"], "2024-07")
             self.assertEqual(months["WRI1000002"], "2024-01")
+            for column in RANKED_COLUMNS:
+                self.assertIn(column, global_ranked.columns)
+            demo = pd.read_csv(run_root / "reports" / "demo_utility_portfolio_global.csv")
+            for column in DEMO_COLUMNS:
+                self.assertIn(column, demo.columns)
             readme = (run_root / "README.md").read_text(encoding="utf-8")
             self.assertIn("this month's burned-area probability", readme)
             self.assertIn("not a customer book", readme)
@@ -274,6 +288,177 @@ class WildfireAssetExposureTest(unittest.TestCase):
             self.assertEqual(int(blocked["status"]), 403)
             reloaded = FailureCache.load(Path(tmp_dir) / "source_fetch_failures.json")
             self.assertIsNotNone(reloaded.blocked(url))
+
+    def test_download_url_does_not_retry_cached_403(self) -> None:
+        url = "https://energydata.info/dataset/e0e878a7-7712-465d-a4c2-69b2b3518513/resource/e0f33c3e-6dab-41d1-919d-d266f300d0bc/download/osm_power_tmm.zip"
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cache = FailureCache.load(Path(tmp_dir) / "source_fetch_failures.json")
+            cache.remember(url, status=403, note="HTTP 403")
+            with patch("wildfire_risk.asset_scale._http_session") as session_factory:
+                status = download_url(url, Path(tmp_dir) / "osm_power_tmm.zip", cache)
+            session_factory.assert_not_called()
+            self.assertEqual(status.status, "cached_failure")
+            self.assertIn("403", status.note)
+
+    def test_parquet_loader_reads_region_cache_without_network(self) -> None:
+        spec = GridSpec()
+        low = _prediction_row(6.75, 3.25, "2024-07", 0.2)
+        cached = pd.DataFrame(
+            [
+                {
+                    "asset_id": "osm_line_1",
+                    "asset_name": "cached line",
+                    "asset_type": "transmission_line",
+                    "cell_ids": [low["cell_id"]],
+                    "cell_weights": {low["cell_id"]: 4},
+                    "asset_source": "osm_geofabrik_power_line_parquet",
+                }
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cache_dir = Path(tmp_dir)
+            cached.to_pickle(cache_dir / "osm_power_line_africa.pkl")
+            with patch("wildfire_risk.asset_scale.duckdb", create=True):
+                assets, status = load_osm_parquet_lines_for_bbox(
+                    (-35.0, 37.5, -18.0, 52.0),
+                    spec=spec,
+                    cache_dir=cache_dir,
+                    region="africa",
+                )
+            self.assertEqual(status.status, "ok")
+            self.assertEqual(len(assets), 1)
+            self.assertEqual(assets.iloc[0]["asset_id"], "osm_line_1")
+            self.assertIn("ODbL", status.note)
+
+
+class AssetScoreFormulasTest(unittest.TestCase):
+    def test_length_weighted_score_below_max_on_90_10_line(self) -> None:
+        spec = GridSpec()
+        low = _prediction_row(6.75, 3.25, "2024-07", 0.20, risk_band="elevated")
+        high = _prediction_row(6.75, 3.75, "2024-07", 0.91, risk_band="extreme")
+        self.assertNotEqual(low["cell_id"], high["cell_id"])
+        assets = pd.DataFrame(
+            [
+                {
+                    "asset_id": "line_90_10",
+                    "asset_name": "mostly quiet line",
+                    "asset_type": "transmission_line",
+                    "region": "africa",
+                    "cell_ids": [low["cell_id"], high["cell_id"]],
+                    "cell_weights": {low["cell_id"]: 90, high["cell_id"]: 10},
+                    "asset_source": "test",
+                }
+            ]
+        )
+        ranked = overlay_assets_on_predictions(assets, pd.DataFrame([low, high]), spec=spec)
+        self.assertEqual(len(ranked), 1)
+        row = ranked.iloc[0]
+        self.assertEqual(row["cell_id"], high["cell_id"])
+        self.assertAlmostEqual(float(row["ranking_score"]), 0.91)
+        expected_len = 0.20 * 0.9 + 0.91 * 0.1
+        self.assertAlmostEqual(float(row["length_weighted_score"]), expected_len)
+        self.assertLess(float(row["length_weighted_score"]), float(row["ranking_score"]))
+        self.assertEqual(int(row["n_cells"]), 2)
+        self.assertEqual(int(row["n_extreme_cells"]), 1)
+        self.assertEqual(int(row["n_high_cells"]), 0)
+        self.assertAlmostEqual(float(row["extreme_cell_fraction"]), 0.5)
+        self.assertAlmostEqual(float(row["score_range"]), 0.71)
+        self.assertGreater(float(row["score_std"]), 0.0)
+        self.assertEqual(int(row["inspect_rank"]), 1)
+        self.assertIn("not a confidence interval", row["reason"])
+
+    def test_sampled_line_geometry_also_separates_s_max_and_s_len(self) -> None:
+        spec = GridSpec()
+        low = _prediction_row(6.75, 3.25, "2024-07", 0.20, risk_band="elevated")
+        high = _prediction_row(6.75, 3.75, "2024-07", 0.91, risk_band="extreme")
+        cell_ids, weights = cell_weights_along_line([3.05, 3.51], [6.75, 6.75], spec=spec, step_deg=0.1)
+        self.assertIn(low["cell_id"], weights)
+        self.assertIn(high["cell_id"], weights)
+        self.assertGreater(weights[low["cell_id"]], weights[high["cell_id"]])
+        assets = pd.DataFrame(
+            [
+                {
+                    "asset_id": "line_geom",
+                    "asset_name": "sampled 90-ish line",
+                    "asset_type": "transmission_line",
+                    "region": "africa",
+                    "cell_ids": cell_ids,
+                    "cell_weights": weights,
+                    "asset_source": "test",
+                }
+            ]
+        )
+        ranked = overlay_assets_on_predictions(assets, pd.DataFrame([low, high]), spec=spec).iloc[0]
+        self.assertAlmostEqual(float(ranked["ranking_score"]), 0.91)
+        self.assertLess(float(ranked["length_weighted_score"]), 0.91)
+        self.assertGreater(float(ranked["score_range"]), 0.0)
+
+    def test_point_asset_has_zero_score_range(self) -> None:
+        plant = _prediction_row(-33.9, 151.2, "2024-01", 0.80, risk_band="high")
+        assets = pd.DataFrame(
+            [
+                {
+                    "asset_id": "plant_sydney",
+                    "asset_name": "Sydney test plant",
+                    "asset_type": "plant",
+                    "region": "australia",
+                    "cell_ids": [plant["cell_id"]],
+                    "cell_weights": {plant["cell_id"]: 1},
+                    "asset_source": "test",
+                }
+            ]
+        )
+        ranked = overlay_assets_on_predictions(assets, pd.DataFrame([plant])).iloc[0]
+        self.assertAlmostEqual(float(ranked["ranking_score"]), float(ranked["length_weighted_score"]))
+        self.assertAlmostEqual(float(ranked["score_range"]), 0.0)
+        self.assertAlmostEqual(float(ranked["score_std"]), 0.0)
+        self.assertEqual(int(ranked["n_cells"]), 1)
+        self.assertAlmostEqual(float(ranked["calibrated_probability"]), 0.80)
+
+    def test_demo_herfindahl_and_high_share(self) -> None:
+        africa = _prediction_row(6.5, 3.4, "2024-07", 0.9, risk_band="extreme")
+        aus = _prediction_row(-33.9, 151.2, "2024-01", 0.7, risk_band="high")
+        na = _prediction_row(37.4, -122.1, "2024-09", 0.1, risk_band="monitor")
+        ranked = pd.DataFrame(
+            [
+                {"asset_id": "a1", "cell_id": africa["cell_id"], "risk_band": "extreme", "ranking_score": 0.9},
+                {"asset_id": "a2", "cell_id": africa["cell_id"], "risk_band": "extreme", "ranking_score": 0.9},
+                {"asset_id": "a3", "cell_id": aus["cell_id"], "risk_band": "high", "ranking_score": 0.7},
+                {"asset_id": "a4", "cell_id": na["cell_id"], "risk_band": "monitor", "ranking_score": 0.1},
+            ]
+        )
+        stats = portfolio_concentration(ranked)
+        self.assertEqual(stats["n_demo_assets"], 4.0)
+        self.assertAlmostEqual(stats["high_or_extreme_share"], 0.75)
+        expected_h = (2 / 4) ** 2 + (1 / 4) ** 2 + (1 / 4) ** 2
+        self.assertAlmostEqual(stats["herfindahl_top_cells"], expected_h)
+        monopoly = portfolio_concentration(ranked.iloc[[0, 1]])
+        self.assertAlmostEqual(monopoly["herfindahl_top_cells"], 1.0)
+
+    def test_synthetic_demo_run_writes_math_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            result = write_synthetic_demo_run(tmp_dir, run_name="wildfire-asset-exposure-global")
+            run_root = Path(result["run_root"])
+            global_ranked = pd.read_csv(run_root / "reports" / "ranked_asset_exposure_global.csv")
+            demo = pd.read_csv(run_root / "reports" / "demo_utility_portfolio_global.csv")
+            self.assertGreaterEqual(len(global_ranked), 4)
+            self.assertEqual(list(global_ranked.columns), list(RANKED_COLUMNS))
+            self.assertEqual(list(demo.columns), list(DEMO_COLUMNS))
+            by_id = global_ranked.set_index("asset_id")
+            line = by_id.loc["synth_line_af_90_10"]
+            self.assertAlmostEqual(float(line["ranking_score"]), 0.91)
+            self.assertLess(float(line["length_weighted_score"]), 0.91)
+            self.assertAlmostEqual(float(line["score_range"]), 0.71)
+            self.assertAlmostEqual(float(by_id.loc["synth_plant_lagos"]["ranking_score"]), 0.88)
+            months = dict(zip(global_ranked["asset_id"], global_ranked["month"]))
+            self.assertEqual(months["synth_plant_lagos"], "2024-07")
+            self.assertEqual(months["synth_plant_sydney"], "2024-01")
+            self.assertEqual(months["synth_plant_bay"], "2024-09")
+            self.assertFalse(pd.isna(demo["high_or_extreme_share"].iloc[0]))
+            self.assertFalse(pd.isna(demo["herfindahl_top_cells"].iloc[0]))
+            readme = (run_root / "README.md").read_text(encoding="utf-8")
+            self.assertIn("SYNTHETIC", readme)
+            self.assertIn("not a customer book", readme)
 
 
 if __name__ == "__main__":

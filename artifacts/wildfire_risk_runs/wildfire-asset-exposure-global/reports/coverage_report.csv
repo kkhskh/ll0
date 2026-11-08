@@ -1,0 +1,2 @@
+region,source,url,status,n_assets,license,note
+global,synthetic_demo,,synthetic,5,not a public GIS extract,"SYNTHETIC. v8 validation_predictions.csv was not on disk. These rows demonstrate S_max, S_len, U(a), N_ext, and demo-book H. They are not burned-area forecasts."
