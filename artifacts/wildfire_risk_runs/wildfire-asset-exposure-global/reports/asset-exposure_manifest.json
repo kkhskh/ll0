@@ -1,0 +1,52 @@
+{
+  "stage": "asset_exposure",
+  "created_at_utc": "2026-11-08T04:06:37.358938+00:00",
+  "run_layout": {
+    "root": "artifacts/wildfire_risk_runs/wildfire-asset-exposure-global",
+    "labels_dir": "artifacts/wildfire_risk_runs/wildfire-asset-exposure-global/labels",
+    "features_dir": "artifacts/wildfire_risk_runs/wildfire-asset-exposure-global/features",
+    "models_dir": "artifacts/wildfire_risk_runs/wildfire-asset-exposure-global/models",
+    "maps_dir": "artifacts/wildfire_risk_runs/wildfire-asset-exposure-global/maps",
+    "reports_dir": "artifacts/wildfire_risk_runs/wildfire-asset-exposure-global/reports"
+  },
+  "config": {
+    "predictions_path": "SYNTHETIC (validation_predictions.csv absent)",
+    "scope": "global",
+    "synthetic": true,
+    "grid": "wildfire_risk.grid.GridSpec 0.5 degree, not EPSG:3310",
+    "horizon": "calendar month burned-area probability (formulas only; scores are synthetic)",
+    "not_modeled": [
+      "spread",
+      "smoke",
+      "dollar_losses",
+      "customer_tvar"
+    ],
+    "formulas": "ASSET_EXPOSURE_MATH.md eqs. (6)-(13); score_range is not a confidence interval",
+    "demo_book": "synthetic public-style book, not a customer book; H is not TVaR"
+  },
+  "artifacts": {
+    "ranked_csv": [
+      "artifacts/wildfire_risk_runs/wildfire-asset-exposure-global/reports/ranked_asset_exposure_africa.csv",
+      "artifacts/wildfire_risk_runs/wildfire-asset-exposure-global/reports/ranked_asset_exposure_australia.csv",
+      "artifacts/wildfire_risk_runs/wildfire-asset-exposure-global/reports/ranked_asset_exposure_north_america.csv",
+      "artifacts/wildfire_risk_runs/wildfire-asset-exposure-global/reports/ranked_asset_exposure_global.csv"
+    ],
+    "demo_portfolio": "artifacts/wildfire_risk_runs/wildfire-asset-exposure-global/reports/demo_utility_portfolio_global.csv",
+    "coverage_report": "artifacts/wildfire_risk_runs/wildfire-asset-exposure-global/reports/coverage_report.csv",
+    "maps": [
+      "artifacts/wildfire_risk_runs/wildfire-asset-exposure-global/maps/asset_exposure_africa_2024-07.png",
+      "artifacts/wildfire_risk_runs/wildfire-asset-exposure-global/maps/asset_exposure_australia_2024-01.png",
+      "artifacts/wildfire_risk_runs/wildfire-asset-exposure-global/maps/asset_exposure_north_america_2024-09.png"
+    ],
+    "readme": "artifacts/wildfire_risk_runs/wildfire-asset-exposure-global/README.md"
+  },
+  "summary": {
+    "n_ranked_assets": 5,
+    "region_months": {
+      "africa": "2024-07",
+      "australia": "2024-01",
+      "north_america": "2024-09"
+    },
+    "synthetic": true
+  }
+}

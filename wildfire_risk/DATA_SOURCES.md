@@ -66,3 +66,12 @@ and accept the agreement, then re-run the subcommand.
 `NASADEM` is about `14000` tiles and roughly `180 GB` globally, which is far more terrain detail than a
 `0.5` degree grid needs. The `nasadem` subcommand therefore refuses to run globally unless you pass
 `--allow-global`; prefer `--bbox west,south,east,north` for the regions you actually model.
+
+## Power-asset overlay (not a model layer)
+
+Worldwide wildfire asset exposure joins public power plants and transmission
+lines onto the existing v8 monthly burned-area scores. It does not retrain the
+model. Sources, licenses, the World Bank zip HTTP 403, and the ODbL GeoParquet
+fallback (bbox-streamed, cached under `datasets/wildfires/assets/`) are recorded
+in `ASSET_EXPOSURE.md`. Numbered formulas and citations are in
+`ASSET_EXPOSURE_MATH.md`.
